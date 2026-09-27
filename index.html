@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Chain Rings · every Bitcoin block</title>
+  <meta name="description" content="Explore every Bitcoin block ever mined, laid out as tree rings: one ring per difficulty period, updated live." />
+  <meta property="og:title" content="Chain Rings" />
+  <meta property="og:description" content="Every Bitcoin block ever mined, as tree rings. Live." />
+  <meta name="theme-color" content="#06070B" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='none' stroke='%23F7931A' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='9' fill='none' stroke='%23F7931A' stroke-width='2' opacity='.7'/%3E%3Ccircle cx='16' cy='16' r='4' fill='%23F7931A'/%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap" />
+</head>
+<body>
+  <canvas id="gl" aria-label="3D map of every Bitcoin block"></canvas>
+  <div id="labels" aria-hidden="true"></div>
+
+  <header class="top">
+    <div class="brand">
+      <h1>Chain <em>Rings</em></h1>
+      <p>Every Bitcoin block ever mined. One ring per difficulty period.</p>
+    </div>
+    <form class="search" id="search" role="search" autocomplete="off">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" /><path d="M13 13l4 4" /></svg>
+      <input id="q" type="search" placeholder="Block height, date, block hash or transaction ID" aria-label="Search the blockchain" spellcheck="false" />
+      <kbd>/</kbd>
+      <ul class="suggest" id="suggest" role="listbox" hidden></ul>
+    </form>
+    <div class="live" id="live" title="Live connection to mempool.space">
+      <span class="dot"></span><span id="live-text">Loading…</span>
+    </div>
+  </header>
+
+  <aside class="panel legend" id="legend">
+    <div class="label">Colour &amp; height</div>
+    <div class="seg" id="metrics" role="radiogroup" aria-label="Metric">
+      <button data-m="tx" role="radio" aria-checked="true">Transactions</button>
+      <button data-m="fees" role="radio" aria-checked="false">Fees</button>
+      <button data-m="size" role="radio" aria-checked="false">Size</button>
+      <button data-m="interval" role="radio" aria-checked="false">Block time</button>
+      <button data-m="pool" role="radio" aria-checked="false">Miners</button>
+    </div>
+    <div id="scale"></div>
+    <details class="howto" id="howto" open>
+      <summary>How to read this</summary>
+      <p>The centre is the genesis block, <b>3 January 2009</b>. Every ring holds <b>2,016 blocks</b>, about two weeks, after which Bitcoin retunes its mining difficulty. The newest block sits on the outer edge and new ones land live.</p>
+      <p class="keys"><span>Drag</span> orbit · <span>Scroll</span> zoom · <span>Click</span> open a block · <span>← →</span> step</p>
+    </details>
+    <dl class="stats" id="stats"></dl>
+  </aside>
+
+  <section class="panel detail" id="detail" hidden aria-live="polite"></section>
+
+  <footer class="timeline" id="timeline">
+    <button class="play" id="play" aria-label="Replay history from 2009">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 4l10 6-10 6z" /></svg>
+    </button>
+    <div class="track" id="track">
+      <canvas id="spark"></canvas>
+      <div class="marks" id="marks"></div>
+      <div class="cursor" id="cursor"><span id="cursor-label"></span></div>
+    </div>
+  </footer>
+
+  <div class="tip" id="tip" hidden></div>
+  <div class="toast" id="toast" hidden></div>
+  <div class="loader" id="loader">
+    <div class="loader-rings"><i></i><i></i><i></i></div>
+    <div class="loader-text" id="loader-text">Downloading the blockchain…</div>
+    <div class="loader-bar"><i id="loader-bar"></i></div>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
