@@ -1,10 +1,13 @@
 import './style.css';
 import { Chain, Mempool, Metric, ago, api, backfill, fmtBtc, fmtDate, fmtInt, fmtMin, liveFeed, loadChain, putBlock } from './data';
 import { View, poolColor } from './view';
+import { Sound } from './audio';
+import { canRecord, recordClip } from './clip';
 
 const $ = <T extends HTMLElement = HTMLElement>(s: string) => document.querySelector(s) as T;
 const esc = (s: string) => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const sound = new Sound();
 
 const LANDMARKS = [
   { h: 0, name: 'Genesis block', desc: 'Satoshi mines the first block. Its coinbase carries the headline “Chancellor on brink of second bailout for banks”.' },
@@ -21,6 +24,7 @@ const LANDMARKS = [
 const landmarkAt = (h: number) => LANDMARKS.find(l => l.h === h);
 const subsidy = (h: number) => 50 / Math.pow(2, Math.floor(h / 210000));
 const fmtSize = (b: number) => (b >= 1e6 ? (b / 1e6).toFixed(2) + ' MB' : (b / 1e3).toFixed(1) + ' kB');
+const poolName = (i: number) => chain.pools[i].replace(/ Pool$/i, '');
 
 let chain: Chain, view: View;
 let selected = -1;
@@ -35,10 +39,14 @@ async function boot() {
   } catch (e) { txt.textContent = 'Could not load block data. Please refresh.'; console.error(e); return; }
   view = new View($('#gl') as HTMLCanvasElement, $('#labels'), chain);
   view.addLandmarks(LANDMARKS.filter(l => l.h !== 170));
-  view.onUserMove = () => { hideHint(); syncViews(); };
+  view.onUserMove = () => hideHint();
+  view.onTxLand = () => sound.tick();
   $('#loader').classList.add('done');
 
-  const deep = parseInt(location.hash.slice(1));
+  // /b/840000 share links (and older #840000 links) open straight onto a block
+  const m = location.pathname.match(/^\/b\/(\d+)/);
+  const deep = m ? +m[1] : parseInt(location.hash.slice(1));
+  if (m) history.replaceState(null, '', `/#${deep}`);
   if (!isNaN(deep) && deep >= 0 && deep < chain.n) {
     const { cam, target } = view.liveFrame();
     view.camera.position.copy(cam); view.controls.target.copy(target);
@@ -51,15 +59,15 @@ async function boot() {
     const R = view.radius();
     view.camera.position.set(0, R * 2.6, R * 1.2); view.controls.target.set(0, 0, 0);
     view.playReveal();
-    setTimeout(() => { if (!view.fly && view.follow) view.goLive(3.2); }, 3600);
+    setTimeout(() => { if (!view.fly && view.follow) view.goLive(3.4); }, 3600);
   }
-  const loop = () => { view.frame(); syncViews(); requestAnimationFrame(loop); };
+  const loop = () => { view.frame(); tickChrome(); requestAnimationFrame(loop); };
   requestAnimationFrame(loop);
 
-  initViews(); initColor(); initTimeline(); initPointer(); initSearch(); initKeys();
+  initChrome(); initColor(); initTimeline(); initPointer(); initSearch(); initFinder(); initKeys();
   renderLive(); renderSubtitle(); renderPending();
   setInterval(() => { renderLive(); renderPending(); }, 1000);
-  setTimeout(hideHint, 16000);
+  setTimeout(hideHint, 18000);
 
   const before = chain.n;
   try {
@@ -76,10 +84,11 @@ async function boot() {
       view.writeBlock(b.height);
       if (!grew) return;
       view.syncCount(); drawSpark(); renderSubtitle(); renderLive(); renderPending();
+      view.celebrate(); sound.blockFound();
       if (view.follow) view.goLive(1.4);
       if (performance.now() > 8000) toast(`New block <b>#${fmtInt(b.height)}</b> joined the chain · ${fmtInt(b.tx_count)} transactions · ${esc(b.extras?.pool?.name ?? 'unknown miner')}`, () => select(b.height));
     },
-    mempool: m => { mempool = m; view.setMempool(m.nextFill, m.vbPerSec / 250); renderPending(); },
+    mempool: mp => { mempool = mp; view.setMempool(mp.nextFill, mp.vbPerSec / 250); renderPending(); },
     state: s => { liveState = s; renderLive(); },
   });
 }
@@ -88,7 +97,7 @@ async function boot() {
 function renderLive() {
   const tip = chain.n - 1;
   $('#live').className = 'live ' + (liveState === 'on' ? 'on' : liveState === 'off' ? 'off' : '');
-  $('#live-text').textContent = `${liveState === 'off' ? 'Offline' : 'Live'} · #${fmtInt(tip)} · ${ago(chain.time[tip])}`;
+  $('#live-text').textContent = innerWidth < 600 ? `#${fmtInt(tip)}` : `${liveState === 'off' ? 'Offline' : 'Live'} · #${fmtInt(tip)} · ${ago(chain.time[tip])}`;
 }
 function renderSubtitle() { $('#subtitle').textContent = `${fmtInt(chain.n)} blocks linked since 3 Jan 2009`; }
 function renderPending() {
@@ -99,35 +108,153 @@ function renderPending() {
 let hintGone = false;
 function hideHint() { if (hintGone) return; hintGone = true; $('#hint').classList.add('gone'); }
 
-function initViews() {
-  document.querySelectorAll<HTMLButtonElement>('.views button').forEach(b => b.addEventListener('click', () => {
-    stopPlay(); if (cut >= 0) setCut(chain.n);
-    if (selected >= 0) closeDetail();
-    if (b.dataset.v === 'live') view.goLive(); else view.overview();
-    hideHint();
-  }));
-  $('#live').addEventListener('click', () => { if (selected >= 0) closeDetail(); stopPlay(); setCut(chain.n); view.goLive(); });
+function initChrome() {
+  const snd = $('#sound');
+  snd.addEventListener('click', () => {
+    const on = sound.on ? (sound.stop(), false) : sound.start();
+    snd.setAttribute('aria-pressed', String(on));
+    snd.setAttribute('aria-label', on ? 'Turn sound off' : 'Turn sound on');
+  });
+  $('#live').addEventListener('click', () => { closeAll(); stopPlay(); setCut(chain.n); view.goLive(); });
+  $('#zoom').addEventListener('click', () => {
+    closeAll(); hideHint();
+    if (document.body.classList.contains('history')) { stopPlay(); setCut(chain.n); view.goLive(2.2); } else view.overview();
+  });
+  document.addEventListener('click', e => { if ((e.target as HTMLElement).closest('button, .cta, .menu li')) sound.click(); });
 }
-let lastView = '';
-function syncViews() {
-  const v = view.follow ? 'live' : view.far > .9 ? 'all' : '';
-  if (v === lastView) return; lastView = v;
-  document.querySelectorAll('.views button').forEach(b => b.setAttribute('aria-pressed', String((b as HTMLElement).dataset.v === v)));
+let wasHistory = false;
+function tickChrome() {
+  const hist = view.far > .8 && !document.body.classList.contains('journey');
+  if (hist !== wasHistory) {
+    wasHistory = hist;
+    document.body.classList.toggle('history', hist);
+    $('#bar').setAttribute('aria-hidden', String(!hist));
+    if (hist) drawSpark();
+  }
 }
+function closeAll() { if (selected >= 0) closeDetail(); $('#result').hidden = true; }
 
 function initColor() {
   const btn = $('#color-btn'), menu = $('#color-menu');
   const close = () => { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); };
-  const set = (m: Metric) => {
-    view.setMetric(m); drawSpark();
-    menu.querySelectorAll('li').forEach(li => li.setAttribute('aria-selected', String((li as HTMLElement).dataset.m === m)));
-    $('#color-label').textContent = menu.querySelector(`[data-m="${m}"] b`)!.textContent!;
-    $('#color-swatch').className = 'swatch' + (m === 'pool' ? ' pools' : '');
+  const set = (mm: Metric) => {
+    view.setMetric(mm); drawSpark();
+    menu.querySelectorAll('li').forEach(li => li.setAttribute('aria-selected', String((li as HTMLElement).dataset.m === mm)));
+    $('#color-label').textContent = menu.querySelector(`[data-m="${mm}"] b`)!.textContent!;
+    $('#color-swatch').className = 'swatch' + (mm === 'pool' ? ' pools' : '');
   };
   btn.addEventListener('click', () => { menu.hidden = !menu.hidden; btn.setAttribute('aria-expanded', String(!menu.hidden)); });
   menu.querySelectorAll<HTMLElement>('li').forEach(li => li.addEventListener('click', () => { set(li.dataset.m as Metric); close(); }));
   addEventListener('pointerdown', e => { if (!(e.target as HTMLElement).closest('.color')) close(); });
   menu.querySelector('[data-m="tx"]')!.setAttribute('aria-selected', 'true');
+}
+
+/* ============================== find your block ============================== */
+const MODES = {
+  born: { q: 'What block were you <em>born</em> in?', sub: 'Every ~10 minutes since January 2009, a new block has joined the chain. Find the one from your birthday.', kicker: 'You were born in block', share: (h: string) => `I was born in Bitcoin block ${h}.` },
+  first: { q: 'Where does your <em>bitcoin</em> story start?', sub: 'Pick the day you first bought, mined or received bitcoin.', kicker: 'Your bitcoin story starts at block', share: (h: string) => `My bitcoin story starts at block ${h}.` },
+  any: { q: 'Pick <em>any</em> day in history.', sub: 'An anniversary, a wedding, the day something changed. See which block was being mined.', kicker: 'On that day the chain reached block', share: (h: string) => `This day is Bitcoin block ${h}.` },
+};
+type Mode = keyof typeof MODES;
+let mode: Mode = 'born';
+let result: { h: number; kicker: string } | null = null;
+function lowerBoundTime(t: number) {
+  let lo = 0, hi = chain.n - 1;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (chain.time[m] < t) lo = m + 1; else hi = m; }
+  return lo;
+}
+function openFinder() {
+  closeAll(); hideHint();
+  $('#finder').hidden = false;
+  setTimeout(() => ($('#finder-date') as HTMLInputElement).focus(), 50);
+}
+function closeFinder() { $('#finder').hidden = true; }
+function initFinder() {
+  $('#find').addEventListener('click', openFinder);
+  $('#finder-close').addEventListener('click', closeFinder);
+  $('#finder').addEventListener('pointerdown', e => { if (e.target === $('#finder')) closeFinder(); });
+  document.querySelectorAll<HTMLButtonElement>('.modes button').forEach(b => b.addEventListener('click', () => {
+    mode = b.dataset.mode as Mode;
+    document.querySelectorAll('.modes button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    $('#finder-q').innerHTML = MODES[mode].q; $('#finder-sub').textContent = MODES[mode].sub;
+  }));
+  const date = $('#finder-date') as HTMLInputElement;
+  date.max = new Date().toISOString().slice(0, 10);
+  $('#finder-form').addEventListener('submit', e => {
+    e.preventDefault();
+    if (!date.value) return;
+    const t = Date.parse(date.value + 'T00:00:00Z') / 1000;
+    closeFinder();
+    let h: number, kicker = MODES[mode].kicker, sub = '';
+    if (t < chain.time[0] - 86400) {
+      h = 0; kicker = mode === 'born' ? "You're older than Bitcoin" : 'Before Bitcoin existed';
+      sub = 'The chain began on 3 January 2009 with the genesis block.';
+    } else if (t > chain.time[chain.n - 1]) {
+      h = chain.n - 1; kicker = "That day's block hasn't been mined yet"; sub = 'Here is the newest block instead.';
+    } else h = lowerBoundTime(t);
+    journey(h, kicker, sub);
+  });
+  $('#result-close').addEventListener('click', () => { $('#result').hidden = true; view.select(-1); });
+  $('#r-more').addEventListener('click', () => { if (result) { $('#result').hidden = true; select(result.h, false); } });
+  $('#r-copy').addEventListener('click', async () => {
+    if (!result) return;
+    try { await navigator.clipboard.writeText(shareUrl(result.h)); $('#r-copy').textContent = 'Copied'; } catch { $('#r-copy').textContent = shareUrl(result.h); }
+  });
+  const clipBtn = $('#r-clip') as HTMLButtonElement;
+  if (!canRecord()) clipBtn.hidden = true;
+  clipBtn.addEventListener('click', async () => {
+    if (!result) return;
+    const r = result, bar = $('#r-progress'), fill = bar.firstElementChild as HTMLElement;
+    clipBtn.disabled = true; clipBtn.textContent = 'Recording…'; bar.hidden = false;
+    $('#result').style.opacity = '.35';
+    try {
+      const { blob, ext } = await recordClip(view, sound, r.h, {
+        kicker: r.kicker, big: `#${fmtInt(r.h)}`, sub: `${fmtDate(chain.time[r.h])} · ${fmtInt(chain.tx[r.h])} transactions`, foot: location.host,
+      }, 6, f => (fill.style.width = `${f * 100}%`));
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = `bitcoin-block-${r.h}.${ext}`; a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      clipBtn.textContent = 'Saved';
+    } catch (err) { clipBtn.textContent = 'Recording failed'; console.error(err); }
+    clipBtn.disabled = false; bar.hidden = true; fill.style.width = '0'; $('#result').style.opacity = '';
+    setTimeout(() => (clipBtn.textContent = 'Save clip'), 2500);
+  });
+}
+const shareUrl = (h: number) => `${location.origin}/b/${h}`;
+function journey(h: number, kicker: string, sub: string) {
+  stopPlay(); if (cut >= 0) setCut(chain.n);
+  if (selected >= 0) closeDetail();
+  document.body.classList.add('journey');
+  view.select(-1);
+  const counter = $('#counter'), num = $('#counter-num');
+  counter.hidden = false;
+  const from = Math.max(0, Math.min(chain.n - 1, view.nearest(view.controls.target.x, view.controls.target.z, chain.n - 1).i));
+  const dur = view.journeyTo(h, () => arrive(h, kicker, sub));
+  sound.whoosh(dur);
+  const t0 = performance.now();
+  const roll = () => {
+    const k = Math.min(1, (performance.now() - t0) / (dur * 1000));
+    const e = k < .5 ? 4 * k ** 3 : 1 - (-2 * k + 2) ** 3 / 2;
+    num.textContent = `#${fmtInt(Math.round(from + (h - from) * e))}`;
+    if (k < 1 && !counter.hidden) requestAnimationFrame(roll);
+  };
+  roll();
+}
+function arrive(h: number, kicker: string, sub: string) {
+  $('#counter').hidden = true;
+  document.body.classList.remove('journey');
+  view.select(h); view.celebrateAt(h); sound.arrive();
+  view.showTxCloud(h);
+  history.replaceState(null, '', `#${h}`);
+  result = { h, kicker };
+  $('#r-kicker').textContent = kicker;
+  $('#r-num').innerHTML = `<small>#</small>${fmtInt(h)}`;
+  $('#r-date').textContent = sub || `Mined ${fmtDate(chain.time[h], true)}`;
+  $('#r-facts').textContent = `${fmtInt(chain.tx[h])} transactions · mined by ${poolName(chain.pool[h])} · ${fmtBtc(subsidy(h))} reward`;
+  const text = `${MODES[mode].share(`#${fmtInt(h)}`)} Find yours:`;
+  ($('#r-share') as HTMLAnchorElement).href = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(shareUrl(h))}`;
+  $('#r-copy').textContent = 'Copy link';
+  $('#result').hidden = false;
 }
 
 /* ============================== timeline ============================== */
@@ -177,17 +304,11 @@ function initTimeline() {
   marks.querySelectorAll<HTMLElement>('.mark').forEach(m => m.addEventListener('pointerdown', e => { e.stopPropagation(); select(+m.dataset.h!); }));
   const at = (e: PointerEvent) => { const r = rail.getBoundingClientRect(); return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * (chain.n - 1); };
   let drag = false;
-  rail.addEventListener('pointerdown', e => {
-    drag = true; rail.setPointerCapture(e.pointerId); stopPlay(); hideHint();
-    if (selected >= 0) closeDetail();
-    if (view.far < .9) view.overview(1.4);
-    setCut(at(e));
-  });
+  rail.addEventListener('pointerdown', e => { drag = true; rail.setPointerCapture(e.pointerId); stopPlay(); closeAll(); setCut(at(e)); });
   rail.addEventListener('pointermove', e => { if (drag) setCut(at(e)); });
   rail.addEventListener('pointerup', () => { drag = false; });
   $('#play').addEventListener('click', () => (playing ? stopPlay() : startPlay()));
   addEventListener('resize', drawSpark);
-  drawSpark();
   let prev = performance.now();
   const tick = (now: number) => {
     const dt = Math.min(.05, (now - prev) / 1000); prev = now;
@@ -195,18 +316,16 @@ function initTimeline() {
       playT = Math.min(1, playT + dt / 22);
       const e = playT < .5 ? 2 * playT * playT : 1 - (-2 * playT + 2) ** 2 / 2;
       setCut(e * (chain.n - 1));
-      if (playT >= 1) { stopPlay(); view.goLive(2.4); }
+      if (playT >= 1) stopPlay();
     }
     requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);
 }
 function startPlay() {
-  playing = true; playT = 0; hideHint();
-  if (selected >= 0) closeDetail();
+  playing = true; playT = 0; closeAll();
   $('#play').innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 4h3.5v12H5zM11.5 4H15v12h-3.5z"/></svg>';
   $('#play').setAttribute('aria-label', 'Pause');
-  view.overview(1.6);
 }
 function stopPlay() {
   if (!playing) return;
@@ -218,20 +337,22 @@ function stopPlay() {
 /* ============================== pointer ============================== */
 function initPointer() {
   const cv = $('#gl'), tip = $('#tip');
-  let down = { x: 0, y: 0 }, mouse = true, pend: { x: number; y: number } | null = null;
+  let down = { x: 0, y: 0 }, mouse = true, pend: { x: number; y: number } | null = null, last = -1;
   cv.addEventListener('pointermove', e => { if (e.pointerType === 'mouse') pend = { x: e.clientX, y: e.clientY }; });
-  cv.addEventListener('pointerleave', () => { pend = null; view.hover(-1); tip.hidden = true; });
+  cv.addEventListener('pointerleave', () => { pend = null; view.hover(-1); tip.hidden = true; last = -1; });
   cv.addEventListener('pointerdown', e => { down = { x: e.clientX, y: e.clientY }; mouse = e.pointerType === 'mouse'; if (!mouse) tip.hidden = true; });
   cv.addEventListener('pointerup', e => {
-    if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return;
+    if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5 || document.body.classList.contains('journey')) return;
     const h = view.pick(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
-    if (h >= 0) select(h); else if (selected >= 0) closeDetail();
+    if (h >= 0) { $('#result').hidden = true; select(h); } else if (selected >= 0) closeDetail();
   });
   const loop = () => {
-    if (pend && mouse) {
+    if (pend && mouse && !document.body.classList.contains('journey')) {
       const p = pend; pend = null;
       const h = view.pick(p.x / innerWidth * 2 - 1, -(p.y / innerHeight) * 2 + 1);
       view.hover(h);
+      if (h !== last && h >= 0) sound.hover();
+      last = h;
       cv.style.cursor = h >= 0 ? 'pointer' : 'grab';
       if (h >= 0) {
         const lm = landmarkAt(h);
@@ -247,17 +368,17 @@ function initPointer() {
 /* ============================== block detail ============================== */
 const cache = new Map<number, { hash: string; info: any; txids: string[] }>();
 let token = 0;
-function select(h: number) {
+function select(h: number, fly = true) {
   h = Math.max(0, Math.min(chain.n - 1, h));
   selected = h; stopPlay(); hideHint();
   if (cut >= 0 && h > cut) setCut(chain.n);
-  view.select(h); view.focusBlock(h);
+  view.select(h); if (fly) view.focusBlock(h);
   history.replaceState(null, '', `#${h}`);
   renderDetail(h);
 }
 function closeDetail() {
   selected = -1; view.select(-1); $('#detail').hidden = true;
-  history.replaceState(null, '', location.pathname);
+  history.replaceState(null, '', '/');
 }
 function renderDetail(h: number) {
   const el = $('#detail'), my = ++token, c = chain, lm = landmarkAt(h);
@@ -278,7 +399,7 @@ function renderDetail(h: number) {
       <div><dt>Size</dt><dd>${fmtSize(c.size[h])}</dd></div>
       <div><dt>Fees</dt><dd>${fmtBtc(c.fee[h] / 1e8)}</dd></div>
       <div><dt>Miner reward</dt><dd>${fmtBtc(subsidy(h) + c.fee[h] / 1e8)}</dd></div>
-      <div><dt>Mined by</dt><dd><i style="background:${poolColor(c.pool[h])}"></i>${esc(c.pools[c.pool[h]].replace(/ ?Pool$/i, ''))}</dd></div>
+      <div><dt>Mined by</dt><dd><i style="background:${poolColor(c.pool[h])}"></i>${esc(poolName(c.pool[h]))}</dd></div>
       <div><dt>After previous</dt><dd>${h > 0 ? fmtMin(gap) : '—'}</dd></div>
     </dl>
     <div><div class="sec-label">Fingerprint (block hash)</div><div class="hash" id="d-hash"><div class="skel" style="flex:1"></div></div></div>
@@ -297,7 +418,7 @@ function renderDetail(h: number) {
   $('#d-prev').onclick = () => select(h - 1);
   $('#d-next').onclick = () => select(h + 1);
   $('#d-share').onclick = async () => {
-    try { await navigator.clipboard.writeText(`${location.origin}${location.pathname}#${h}`); $('#d-share').textContent = 'Copied'; } catch { $('#d-share').textContent = `…/#${h}`; }
+    try { await navigator.clipboard.writeText(shareUrl(h)); $('#d-share').textContent = 'Copied'; } catch { $('#d-share').textContent = shareUrl(h); }
   };
   view.showTxCloud(h);
   loadDetail(h).then(d => {
@@ -335,11 +456,6 @@ function argmax(name: 'tx' | 'fee') {
 
 /* ============================== search ============================== */
 type Sugg = { title: string; meta?: string; note?: string; go: () => void | Promise<void> };
-function lowerBoundTime(t: number) {
-  let lo = 0, hi = chain.n - 1;
-  while (lo < hi) { const m = (lo + hi) >> 1; if (chain.time[m] < t) lo = m + 1; else hi = m; }
-  return lo;
-}
 function suggestions(q: string): Sugg[] {
   q = q.trim();
   const out: Sugg[] = [];
@@ -360,7 +476,7 @@ function suggestions(q: string): Sugg[] {
         try {
           const h = isBlock ? (await api.block(q)).height : (await api.tx(q)).status?.block_height;
           if (h == null) throw new Error('unconfirmed');
-          hideSuggest(); select(h);
+          closeSearch(); select(h);
           if (!isBlock) toast(`That transaction is in block <b>#${fmtInt(h)}</b>`);
         } catch { setSuggest([{ title: 'Not found, or not confirmed yet.', go: () => {} }], true); }
       },
@@ -385,23 +501,26 @@ function setSuggest(list: Sugg[], msg = false) {
   ul.innerHTML = list.map((s, i) => `<li role="option" data-i="${i}" aria-selected="${i === 0 && !msg}" class="${msg ? 'msg' : ''}"><b>${esc(s.title)}</b><span>${esc(s.meta || '')}</span>${s.note ? `<small>${esc(s.note)}</small>` : ''}</li>`).join('');
   ul.querySelectorAll('li').forEach(li => li.addEventListener('mousedown', e => { e.preventDefault(); run(+(li as HTMLElement).dataset.i!); }));
 }
-function hideSuggest() { $('#suggest').hidden = true; }
+function openSearch() { $('#search').classList.add('open'); ($('#q') as HTMLInputElement).focus(); }
+function closeSearch() { $('#suggest').hidden = true; $('#search').classList.remove('open'); ($('#q') as HTMLInputElement).value = ''; ($('#q') as HTMLInputElement).blur(); }
 function run(i: number) {
   const s = current[i]; if (!s) return;
-  if (!(s.go() instanceof Promise)) { hideSuggest(); ($('#q') as HTMLInputElement).blur(); }
+  closeAll();
+  if (!(s.go() instanceof Promise)) closeSearch();
 }
 function initSearch() {
   const q = $('#q') as HTMLInputElement;
+  $('#search-btn').addEventListener('click', () => ($('#search').classList.contains('open') ? closeSearch() : openSearch()));
   q.addEventListener('focus', () => setSuggest(suggestions(q.value)));
   q.addEventListener('input', () => setSuggest(suggestions(q.value)));
-  q.addEventListener('blur', () => setTimeout(hideSuggest, 120));
+  q.addEventListener('blur', () => setTimeout(() => { if (document.activeElement !== q) { $('#suggest').hidden = true; if (!q.value) $('#search').classList.remove('open'); } }, 150));
   q.addEventListener('keydown', e => {
     const items = $('#suggest').querySelectorAll('li');
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault(); active = (active + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
       items.forEach((li, i) => li.setAttribute('aria-selected', String(i === active)));
       items[active]?.scrollIntoView({ block: 'nearest' });
-    } else if (e.key === 'Escape') q.blur();
+    } else if (e.key === 'Escape') closeSearch();
   });
   $('#search').addEventListener('submit', e => { e.preventDefault(); run(active); });
 }
@@ -409,12 +528,13 @@ function initSearch() {
 /* ============================== keys & toast ============================== */
 function initKeys() {
   addEventListener('keydown', e => {
-    if ((e.target as HTMLElement).tagName === 'INPUT') return;
-    if (e.key === '/') { e.preventDefault(); ($('#q') as HTMLInputElement).focus(); }
-    if (e.key === 'Escape' && selected >= 0) closeDetail();
+    if ((e.target as HTMLElement).tagName === 'INPUT') { if (e.key === 'Escape') closeFinder(); return; }
+    if (e.key === '/') { e.preventDefault(); openSearch(); }
+    if (e.key === 'Escape') { closeFinder(); closeAll(); }
+    if (e.key.toLowerCase() === 'f' && $('#finder').hidden) { e.preventDefault(); openFinder(); }
     if (e.key === 'ArrowLeft' && selected > 0) select(selected - 1);
     if (e.key === 'ArrowRight' && selected >= 0 && selected < chain.n - 1) select(selected + 1);
-    if (e.key.toLowerCase() === 'l') { if (selected >= 0) closeDetail(); view.goLive(); }
+    if (e.key.toLowerCase() === 'l') { closeAll(); view.goLive(); }
   });
 }
 let toastTimer = 0;
