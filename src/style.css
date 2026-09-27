@@ -41,6 +41,9 @@ button { cursor: pointer; }
 .icon { width: 36px; height: 36px; border-radius: 18px; border: 1px solid var(--line); background: var(--glass); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur); display: grid; place-items: center; color: var(--text-2); flex: none; padding: 0; }
 .icon:hover { color: var(--text); border-color: var(--line-2); }
 .icon svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+#fullscreen .fs-out, #fullscreen[aria-pressed="true"] .fs-in { display: none; }
+#fullscreen[aria-pressed="true"] .fs-out { display: block; }
+#fullscreen[aria-pressed="true"] { color: var(--gold); border-color: rgba(247,147,26,.4); }
 #sound .w1, #sound .w2 { display: none; }
 #sound[aria-pressed="true"] { color: var(--gold); border-color: rgba(247,147,26,.4); }
 #sound[aria-pressed="true"] .w1, #sound[aria-pressed="true"] .w2 { display: block; }

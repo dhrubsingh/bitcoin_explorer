@@ -191,7 +191,28 @@ function renderPending() {
 let hintGone = false;
 function hideHint() { if (hintGone) return; hintGone = true; $('#hint').classList.add('gone'); }
 
+/* full screen: the whole page, so the UI stays usable. Hidden where the browser can't do it (e.g. iPhone Safari). */
+const doc = document as Document & { webkitFullscreenElement?: Element; webkitExitFullscreen?: () => Promise<void> };
+const root = document.documentElement as HTMLElement & { webkitRequestFullscreen?: () => Promise<void> };
+const isFull = () => !!(doc.fullscreenElement || doc.webkitFullscreenElement);
+function toggleFullscreen() {
+  if (isFull()) (doc.exitFullscreen ?? doc.webkitExitFullscreen)?.call(doc);
+  else (root.requestFullscreen ?? root.webkitRequestFullscreen)?.call(root)?.catch?.(() => {});
+}
+function initFullscreen() {
+  const btn = $('#fullscreen');
+  if (!(root.requestFullscreen || root.webkitRequestFullscreen)) { btn.hidden = true; return; }
+  btn.addEventListener('click', toggleFullscreen);
+  const sync = () => {
+    btn.setAttribute('aria-pressed', String(isFull()));
+    btn.setAttribute('aria-label', isFull() ? 'Exit full screen' : 'Enter full screen');
+  };
+  document.addEventListener('fullscreenchange', sync);
+  document.addEventListener('webkitfullscreenchange', sync);
+}
+
 function initChrome() {
+  initFullscreen();
   const snd = $('#sound');
   snd.addEventListener('click', () => {
     const on = sound.on ? (sound.stop(), false) : sound.start();
@@ -474,6 +495,7 @@ function initKeys() {
   addEventListener('keydown', e => {
     if ((e.target as HTMLElement).tagName === 'INPUT') return;
     if (e.key === '/') { e.preventDefault(); openSearch(); }
+    if (e.key.toLowerCase() === 'f' && !e.metaKey && !e.ctrlKey) { e.preventDefault(); toggleFullscreen(); }
     if (e.key === 'Escape') closeDetail();
     if (e.key === 'ArrowLeft' && selected > 0) select(selected - 1);
     if (e.key === 'ArrowRight' && selected >= 0 && selected < chain.n - 1) select(selected + 1);
