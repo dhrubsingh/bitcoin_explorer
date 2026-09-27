@@ -9,9 +9,12 @@ const PENTA = [0, 3, 5, 7, 10];            // A minor pentatonic
 const ROOT = 57;                            // A3
 
 export class Sound {
-  ctx: AudioContext | null = null;
+  ctx: BaseAudioContext | null = null;
+  /** when set, events are scheduled at this time instead of now (offline rendering) */
+  at: number | null = null;
+  private now() { return this.at ?? this.ctx!.currentTime; }
   on = false;
-  private master!: GainNode;
+  master!: GainNode;
   private fx!: GainNode;
   private verb!: ConvolverNode;
   private noise!: AudioBuffer;
@@ -24,7 +27,7 @@ export class Sound {
     const AC = window.AudioContext || (window as any).webkitAudioContext;
     if (!AC) return false;
     if (!this.ctx) this.build(new AC());
-    this.ctx!.resume();
+    (this.ctx as AudioContext).resume();
     this.on = true;
     const t = this.ctx!.currentTime;
     this.master.gain.cancelScheduledValues(t);
@@ -39,13 +42,12 @@ export class Sound {
     this.master.gain.setTargetAtTime(0, t, .25);
   }
 
-  private build(ctx: AudioContext) {
+  build(ctx: BaseAudioContext) {
     this.ctx = ctx;
     this.master = ctx.createGain(); this.master.gain.value = 0;
     const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -18; comp.ratio.value = 3; comp.attack.value = .01;
     this.master.connect(comp).connect(ctx.destination);
-    this.dest = ctx.createMediaStreamDestination();
-    comp.connect(this.dest);
+    if ('createMediaStreamDestination' in ctx) { this.dest = (ctx as AudioContext).createMediaStreamDestination(); comp.connect(this.dest); }
 
     this.verb = ctx.createConvolver();
     const len = ctx.sampleRate * 4.5, ir = ctx.createBuffer(2, len, ctx.sampleRate);
@@ -88,7 +90,7 @@ export class Sound {
     g.gain.exponentialRampToValueAtTime(.0001, t + a + d);
   }
   private bell(freq: number, vel: number, when = 0, pan = 0) {
-    const ctx = this.ctx!, t = ctx.currentTime + when;
+    const ctx = this.ctx!, t = this.now() + when;
     const p = ctx.createStereoPanner(); p.pan.value = pan; p.connect(this.fx);
     for (const [r, a, d] of [[1, 1, 3.2], [2.76, .28, 1.3], [5.4, .09, .6], [8.9, .04, .3]]) {
       const o = ctx.createOscillator(); o.type = 'sine'; o.frequency.value = freq * r;
@@ -101,8 +103,8 @@ export class Sound {
   /** a transaction landing in the next block */
   tick() {
     if (!this.on) return;
-    const now = performance.now(); if (now - this.lastTick < 110) return; this.lastTick = now;
-    const ctx = this.ctx!, t = ctx.currentTime;
+    const now = this.now() * 1000; if (now - this.lastTick < 110 && now >= this.lastTick) return; this.lastTick = now;
+    const ctx = this.ctx!, t = this.now();
     const f = this.note(Math.floor(Math.random() * 10), 2);
     const p = ctx.createStereoPanner(); p.pan.value = Math.random() * 1.4 - .7; p.connect(this.fx);
     const o = ctx.createOscillator(); o.type = 'triangle'; o.frequency.value = f;
@@ -111,15 +113,15 @@ export class Sound {
   }
   hover() {
     if (!this.on) return;
-    const now = performance.now(); if (now - this.lastHover < 60) return; this.lastHover = now;
-    const ctx = this.ctx!, t = ctx.currentTime;
+    const now = this.now() * 1000; if (now - this.lastHover < 60 && now >= this.lastHover) return; this.lastHover = now;
+    const ctx = this.ctx!, t = this.now();
     const o = ctx.createOscillator(); o.frequency.value = 2400 + Math.random() * 600;
     const g = ctx.createGain(); this.env(g, t, .001, .012, .04);
     o.connect(g).connect(this.master); o.start(t); o.stop(t + .06);
   }
   click() {
     if (!this.on) return;
-    const ctx = this.ctx!, t = ctx.currentTime;
+    const ctx = this.ctx!, t = this.now();
     const o = ctx.createOscillator(); o.frequency.setValueAtTime(1300, t); o.frequency.exponentialRampToValueAtTime(700, t + .05);
     const g = ctx.createGain(); this.env(g, t, .002, .05, .07);
     o.connect(g).connect(this.master); o.start(t); o.stop(t + .1);
@@ -127,7 +129,7 @@ export class Sound {
   /** a new block joins the chain */
   blockFound() {
     if (!this.on) return;
-    const ctx = this.ctx!, t = ctx.currentTime;
+    const ctx = this.ctx!, t = this.now();
     // sub boom
     const o = ctx.createOscillator(); o.frequency.setValueAtTime(90, t); o.frequency.exponentialRampToValueAtTime(32, t + 1.2);
     const g = ctx.createGain(); this.env(g, t, .01, .55, 1.8);
@@ -144,7 +146,7 @@ export class Sound {
   /** a long camera flight; returns nothing, lasts `dur` seconds */
   whoosh(dur: number) {
     if (!this.on) return;
-    const ctx = this.ctx!, t = ctx.currentTime;
+    const ctx = this.ctx!, t = this.now();
     const s = ctx.createBufferSource(); s.buffer = this.noise; s.loop = true;
     const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.Q.value = 1.2;
     f.frequency.setValueAtTime(220, t); f.frequency.exponentialRampToValueAtTime(2600, t + dur * .45); f.frequency.exponentialRampToValueAtTime(260, t + dur);
@@ -159,8 +161,26 @@ export class Sound {
   arrive() {
     if (!this.on) return;
     [0, 4, 7, 9].forEach((k, i) => this.bell(this.note(k, 1), .8, i * .11, (i - 1.5) * .3));
-    const ctx = this.ctx!, t = ctx.currentTime;
+    const ctx = this.ctx!, t = this.now();
     const o = ctx.createOscillator(); o.frequency.value = mtof(33);
     const g = ctx.createGain(); this.env(g, t, .02, .2, 2.5); o.connect(g).connect(this.master); o.start(t); o.stop(t + 2.6);
   }
+}
+
+/** Render a logged sequence of sound events (seconds, method, args) with the site's own synth, as a 16-bit WAV. */
+export async function renderEvents(events: [number, string, unknown[]][], seconds: number): Promise<Uint8Array> {
+  const SR = 44100, ctx = new OfflineAudioContext(2, Math.ceil(SR * seconds), SR);
+  const s = new Sound();
+  s.build(ctx); s.on = true;
+  s.master.gain.setValueAtTime(.9, 0);
+  for (const [t, name, args] of events) { s.at = t; (s as any)[name](...args); }
+  const buf = await ctx.startRendering();
+  const n = buf.length, out = new DataView(new ArrayBuffer(44 + n * 4));
+  const str = (o: number, x: string) => { for (let i = 0; i < x.length; i++) out.setUint8(o + i, x.charCodeAt(i)); };
+  str(0, 'RIFF'); out.setUint32(4, 36 + n * 4, true); str(8, 'WAVE'); str(12, 'fmt ');
+  out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 2, true); out.setUint32(24, SR, true);
+  out.setUint32(28, SR * 4, true); out.setUint16(32, 4, true); out.setUint16(34, 16, true); str(36, 'data'); out.setUint32(40, n * 4, true);
+  const L = buf.getChannelData(0), R = buf.getChannelData(1);
+  for (let i = 0; i < n; i++) for (const [c, ch] of [[0, L], [1, R]] as const) out.setInt16(44 + i * 4 + c * 2, Math.max(-1, Math.min(1, ch[i])) * 32767, true);
+  return new Uint8Array(out.buffer);
 }

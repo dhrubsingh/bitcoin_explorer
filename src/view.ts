@@ -85,7 +85,7 @@ void main() {
   c *= 1. + 2.2 * exp(-wave * wave / 30.) * exp(-uWaveT * .45);
   if (hov) c = c * 1.6 + vec3(.15);
   if (sel) c = lin(vec3(1., .95, .85)) * 1.6;
-  vDim = mix(1., .25, away) * ((uSel > -.5 && !sel) ? .55 : 1.);
+  vDim = mix(1., .25, away) * ((uSel > -.5 && !sel) ? mix(.55, 1., smoothstep(.3, .7, uFar)) : 1.);   // only dim around a selection up close
   vCol = c;
 #ifdef REFLECT
   wp.y = -wp.y; vN.y = -vN.y;
@@ -487,9 +487,26 @@ export class View {
     const R = this.radius();
     this.flyTo(new THREE.Vector3(0, R * 2.3, R * 1.3), new THREE.Vector3(0, 0, 0), dur);
   }
-  /** stepping to a neighbouring block: slide the current view along the chain, keeping the camera angle */
-  stepTo(h: number) {
+  /**
+   * Stepping along the chain. At rest (m = 0) it slides the current view, keeping the camera angle.
+   * With momentum (m → 1, from rapid presses) the camera pulls back further on each step until the
+   * whole coil is in view.
+   */
+  stepTo(h: number, m = 0) {
     this.follow = false;
+    if (m > .02) {
+      const c = this.centerOf(h), p = blockPos(h);
+      const dir = new THREE.Vector3(Math.cos(p.phi), 0, Math.sin(p.phi)), out = new THREE.Vector3(p.x, 0, p.z).normalize();
+      const d = 7 * Math.exp(m * 6.3), w = THREE.MathUtils.smoothstep(m, .55, 1);
+      const bt = new THREE.Vector3(c.x, c.y + .5, c.z);
+      const bc = bt.clone().addScaledVector(out, d).addScaledVector(dir, -d * .35).add(new THREE.Vector3(0, d * .5, 0));
+      // near full speed, ease into the same pose as the whole-history view
+      const R = this.radius();
+      const target = bt.lerp(new THREE.Vector3(0, 0, 0), w), cam = bc.lerp(new THREE.Vector3(0, R * 2.3, R * 1.3), w);
+      this.flyTo(cam, target, .25);
+      this.fly!.snappy = true;
+      return;
+    }
     const c = this.centerOf(h), to = new THREE.Vector3(c.x, c.y + .5, c.z);
     const delta = to.clone().sub(this.fly ? this.fly.tTo : this.controls.target);
     const camTo = (this.fly ? this.fly.to : this.camera.position).clone().add(delta);

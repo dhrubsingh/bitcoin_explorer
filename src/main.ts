@@ -1,7 +1,7 @@
 import './style.css';
 import { Chain, Mempool, Metric, ago, backfill, fmtBtc, fmtDate, fmtInt, fmtUsd, liveFeed, livePrice, loadChain, priceDays, putBlock, refreshPrice, api } from './data';
 import { View, blockPos, poolColor } from './view';
-import { Sound } from './audio';
+import { Sound, renderEvents } from './audio';
 
 const $ = <T extends HTMLElement = HTMLElement>(s: string) => document.querySelector(s) as T;
 const esc = (s: string) => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
@@ -132,6 +132,9 @@ async function boot() {
   setTimeout(hideHint, 18000);
 
   if (CAPTURE) {
+    const log: [number, string, unknown[]][] = [];
+    for (const k of ['tick', 'hover', 'click', 'blockFound'] as const) (sound as any)[k] = (...a: unknown[]) => log.push([frames, k, a]);
+    Object.assign(window, { __sound: { log, render: (ev: [number, string, unknown[]][], secs: number) => renderEvents(ev, secs) } });
     // the recorder drives time: every call advances the whole app by exactly dt seconds
     Object.assign(window, { __tick: tick, __app: { view, blockPos, select, closeDetail, setMetric, startPlay, stopPlay, setCut, openSearch, closeSearch, chain, events: EVENTS, sound } });
   } else {
@@ -167,9 +170,11 @@ async function boot() {
 
 /** one step of the whole app */
 let introAt = -1, clock = 0;
+let frames = 0;
 function tick(dt: number) {
-  clock += dt;
+  clock += dt; frames++;
   if (introAt >= 0 && clock >= introAt) { introAt = -1; if (!view.fly && view.follow) view.goLive(3.4); }
+  if (clock - lastStep > .35) momentum = Math.max(0, momentum - dt * .8);
   view.frame(dt);
   tickChrome(); tickTimeline(dt); tickHover();
 }
@@ -388,16 +393,32 @@ const ICON = {
   check: '<svg viewBox="0 0 20 20"><path d="M5 10.5l3 3 7-7"/></svg>',
 };
 const shareUrl = (h: number) => `${location.origin}/b/${h}`;
-function select(h: number, fly = true) {
+/*
+ * Stepping with momentum: quick presses (or a held arrow key) build speed. Each step then skips more
+ * blocks and the camera pulls back, until at full speed you land on the whole history.
+ */
+let momentum = 0, lastStep = -1;
+function step(dir: 1 | -1) {
+  const gap = clock - lastStep;
+  lastStep = clock;
+  if (gap < .14) momentum = Math.min(1, momentum + .011);   // quick presses build speed
+  else if (gap > .6) momentum *= .5;                        // a real pause bleeds it off
+  if (momentum >= 1) { momentum = 0; closeDetail(); view.overview(1.6); return; }
+  const skip = Math.max(1, Math.round(Math.exp(momentum * 9)));
+  const from = selected >= 0 ? selected : chain.n - 1;
+  select(Math.max(0, Math.min(chain.n - 1, from + dir * skip)), true, true);
+}
+let lastHash = 0;
+function select(h: number, fly = true, stepping = false) {
   h = Math.max(0, Math.min(chain.n - 1, h));
   stopPlay(); hideHint();
   if (cut >= 0 && h > cut) setCut(chain.n);
   const prev = selected;
   selected = h;
   view.select(h);
-  if (fly) { if (prev >= 0 && prev !== h && Math.abs(h - prev) <= 3 && view.far < .3) view.stepTo(h); else view.focusBlock(h); }
-  view.showTxCloud(h);
-  history.replaceState(null, '', `#${h}`);
+  if (fly) { if (stepping || (prev >= 0 && prev !== h && Math.abs(h - prev) <= 3 && view.far < .3)) view.stepTo(h, stepping ? momentum : 0); else view.focusBlock(h); }
+  if (momentum < .05) view.showTxCloud(h);
+  if (clock - lastHash > .3) { lastHash = clock; history.replaceState(null, '', `#${h}`); }   // browsers rate-limit URL updates
   renderCard(h);
 }
 function closeDetail() {
@@ -430,8 +451,8 @@ function renderCard(h: number) {
       <a class="nav" href="https://mempool.space/block/${h}" target="_blank" rel="noopener" aria-label="Open in mempool.space">${ICON.out}</a>
     </div>`;
   $('#d-close').onclick = closeDetail;
-  $('#d-prev').onclick = () => select(h - 1);
-  $('#d-next').onclick = () => select(h + 1);
+  $('#d-prev').onclick = () => step(-1);
+  $('#d-next').onclick = () => step(1);
   $('#d-copy').onclick = async () => {
     try { await navigator.clipboard.writeText(shareUrl(h)); $('#d-copy').innerHTML = ICON.check; setTimeout(() => ($('#d-copy') && ($('#d-copy').innerHTML = ICON.link)), 1500); } catch { toast(shareUrl(h)); }
   };
@@ -512,8 +533,8 @@ function initKeys() {
     if (e.key === '/') { e.preventDefault(); openSearch(); }
     if (e.key.toLowerCase() === 'f' && !e.metaKey && !e.ctrlKey) { e.preventDefault(); toggleFullscreen(); }
     if (e.key === 'Escape') closeDetail();
-    if (e.key === 'ArrowLeft' && selected > 0) select(selected - 1);
-    if (e.key === 'ArrowRight' && selected >= 0 && selected < chain.n - 1) select(selected + 1);
+    if (e.key === 'ArrowLeft' && selected >= 0) { e.preventDefault(); step(-1); }
+    if (e.key === 'ArrowRight' && selected >= 0) { e.preventDefault(); step(1); }
     if (e.key.toLowerCase() === 'l') { closeDetail(); view.goLive(); }
   });
 }
