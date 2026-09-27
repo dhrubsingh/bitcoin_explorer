@@ -1,12 +1,14 @@
-# Chain Rings
+# The Chain
 
-Every Bitcoin block ever mined, laid out as tree rings in 3D. Each ring is one
-difficulty period (2,016 blocks, about two weeks); the genesis block sits at the
-centre and new blocks land on the outer edge live.
+Every Bitcoin block ever mined, linked in one continuous chain in 3D, growing live.
 
-- **Colour & height**: transactions, fees, size, time between blocks, or mining pool
+- **Latest**: the newest blocks up close. The translucent *next block* fills with waiting
+  transactions (from the mempool) and joins the chain when a miner finds it.
+- **All history**: zoom out and the same chain turns out to be coiled into a spiral,
+  genesis (2009) at the centre and today at the edge.
+- **Block size & colour**: transactions, fees, size, or who mined it
 - **Timeline**: scrub or replay 2009 → today, with landmark blocks marked
-- **Search**: block height, date (`2017-12-17`), block hash or transaction ID
+- **Search**: block number, date (`2017-12-17`), block hash or transaction ID
 - **Block detail**: live data from mempool.space, plus a cloud of its transactions
 - **Deep links**: `/#840000` opens that block
 

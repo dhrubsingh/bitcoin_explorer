@@ -133,20 +133,27 @@ export async function backfill(c: Chain, onBlocks: () => void, maxGap = 4000) {
   return { tip, missing: tip + 1 - c.n };
 }
 
-/** Live new-block feed from mempool.space, with reconnects. */
-export function liveBlocks(onBlock: (b: any) => void, onState: (s: 'on' | 'off') => void) {
+export interface Mempool { count: number; nextTx: number; nextFill: number; nextMedianFee: number; vbPerSec: number }
+
+/** Live feed from mempool.space: new blocks, plus the queue of waiting transactions. Reconnects on drop. */
+export function liveFeed(on: { block: (b: any) => void; mempool: (m: Mempool) => void; state: (s: 'on' | 'off') => void }) {
   let ws: WebSocket | null = null, retry = 1000;
+  const m: Mempool = { count: 0, nextTx: 0, nextFill: 0, nextMedianFee: 0, vbPerSec: 0 };
   const open = () => {
     ws = new WebSocket('wss://mempool.space/api/v1/ws');
-    ws.onopen = () => { retry = 1000; ws!.send(JSON.stringify({ action: 'want', data: ['blocks'] })); onState('on'); };
+    ws.onopen = () => { retry = 1000; ws!.send(JSON.stringify({ action: 'want', data: ['blocks', 'mempool-blocks', 'stats'] })); on.state('on'); };
     ws.onmessage = e => {
-      try {
-        const m = JSON.parse(e.data);
-        if (m.block) onBlock(m.block);
-        if (Array.isArray(m.blocks)) m.blocks.forEach(onBlock);
-      } catch { /* ignore */ }
+      let d: any; try { d = JSON.parse(e.data); } catch { return; }
+      if (d.block) on.block(d.block);
+      if (Array.isArray(d.blocks)) d.blocks.forEach(on.block);
+      let changed = false;
+      const next = d['mempool-blocks']?.[0];
+      if (next) { m.nextTx = next.nTx; m.nextFill = next.blockVSize / 1e6; m.nextMedianFee = next.medianFee; changed = true; }
+      if (d.mempoolInfo?.size != null) { m.count = d.mempoolInfo.size; changed = true; }
+      if (typeof d.vBytesPerSecond === 'number') { m.vbPerSec = d.vBytesPerSecond; changed = true; }
+      if (changed) on.mempool({ ...m });
     };
-    ws.onclose = () => { onState('off'); setTimeout(open, retry); retry = Math.min(30000, retry * 2); };
+    ws.onclose = () => { on.state('off'); setTimeout(open, retry); retry = Math.min(30000, retry * 2); };
     ws.onerror = () => ws?.close();
   };
   open();

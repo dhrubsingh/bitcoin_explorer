@@ -1,6 +1,6 @@
 import './style.css';
-import { Chain, METRICS, Metric, ago, api, backfill, fmtBtc, fmtDate, fmtInt, fmtMin, liveBlocks, loadChain, putBlock } from './data';
-import { PER_RING, View, poolColor } from './view';
+import { Chain, Mempool, Metric, ago, api, backfill, fmtBtc, fmtDate, fmtInt, fmtMin, liveFeed, loadChain, putBlock } from './data';
+import { View, poolColor } from './view';
 
 const $ = <T extends HTMLElement = HTMLElement>(s: string) => document.querySelector(s) as T;
 const esc = (s: string) => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
@@ -8,222 +8,250 @@ const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 const LANDMARKS = [
   { h: 0, name: 'Genesis block', desc: 'Satoshi mines the first block. Its coinbase carries the headline “Chancellor on brink of second bailout for banks”.' },
-  { h: 170, name: 'First person-to-person payment', desc: 'Satoshi sends 10 BTC to Hal Finney.' },
-  { h: 57043, name: 'Bitcoin Pizza Day', desc: 'Laszlo Hanyecz pays 10,000 BTC for two pizzas.' },
+  { h: 170, name: 'First payment', desc: 'Satoshi sends 10 BTC to Hal Finney, the first person-to-person transaction.' },
+  { h: 57043, name: 'Pizza Day', desc: 'Laszlo Hanyecz pays 10,000 BTC for two pizzas.' },
   { h: 210000, name: 'First halving', desc: 'The block reward drops from 50 to 25 BTC.' },
   { h: 420000, name: 'Second halving', desc: 'The block reward drops to 12.5 BTC.' },
-  { h: 481824, name: 'SegWit activates', desc: 'Segregated Witness lets blocks grow past the old 1 MB limit.' },
+  { h: 481824, name: 'SegWit', desc: 'Segregated Witness activates, letting blocks grow past the old 1 MB limit.' },
   { h: 630000, name: 'Third halving', desc: 'The block reward drops to 6.25 BTC.' },
-  { h: 709632, name: 'Taproot activates', desc: 'Schnorr signatures and more flexible, more private scripts.' },
-  { h: 767430, name: 'First Ordinals inscription', desc: 'Inscriptions start filling blocks with data, pushing sizes toward 4 MB.' },
+  { h: 709632, name: 'Taproot', desc: 'Taproot activates: Schnorr signatures and more flexible, more private scripts.' },
+  { h: 767430, name: 'First inscription', desc: 'The first Ordinals inscription. Data-heavy transactions start pushing blocks toward 4 MB.' },
   { h: 840000, name: 'Fourth halving', desc: 'The reward drops to 3.125 BTC. Runes launch in the same block and fees spike.' },
 ];
 const landmarkAt = (h: number) => LANDMARKS.find(l => l.h === h);
 const subsidy = (h: number) => 50 / Math.pow(2, Math.floor(h / 210000));
-const fmtDiff = (d: number) => d >= 1e12 ? (d / 1e12).toFixed(2) + ' T' : d >= 1e9 ? (d / 1e9).toFixed(2) + ' G' : d >= 1e6 ? (d / 1e6).toFixed(2) + ' M' : d >= 1e3 ? (d / 1e3).toFixed(1) + ' K' : d.toFixed(0);
-const fmtSize = (b: number) => b >= 1e6 ? (b / 1e6).toFixed(2) + ' MB' : (b / 1e3).toFixed(1) + ' kB';
+const fmtSize = (b: number) => (b >= 1e6 ? (b / 1e6).toFixed(2) + ' MB' : (b / 1e3).toFixed(1) + ' kB');
 
 let chain: Chain, view: View;
 let selected = -1;
-let lastPointer = { x: 0, y: 0, move: false };
+let liveState: 'on' | 'off' | 'wait' = 'wait';
+let mempool: Mempool | null = null;
 
 /* ============================== boot ============================== */
 async function boot() {
-  const bar = $('#loader-bar'), txt = $('#loader-text');
+  const txt = $('#loader-text');
   try {
-    chain = await loadChain(f => { bar.style.width = `${f * 100}%`; txt.textContent = `Downloading the blockchain… ${Math.round(f * 100)}%`; });
-  } catch (e) {
-    txt.textContent = 'Could not load block data. Please refresh.'; console.error(e); return;
-  }
-  txt.textContent = `Laying out ${fmtInt(chain.n)} blocks…`;
-  await new Promise(r => setTimeout(r, 30));
+    chain = await loadChain(f => { txt.textContent = `Downloading the blockchain… ${Math.round(f * 100)}%`; });
+  } catch (e) { txt.textContent = 'Could not load block data. Please refresh.'; console.error(e); return; }
   view = new View($('#gl') as HTMLCanvasElement, $('#labels'), chain);
+  view.addLandmarks(LANDMARKS.filter(l => l.h !== 170));
+  view.onUserMove = () => { hideHint(); syncViews(); };
   $('#loader').classList.add('done');
-  if (reduceMotion) { view.mat.uniforms.uReveal.value = 1e9; view.overview(0.01); } else { view.playReveal(); view.overview(4.6); }
-  const loop = () => { view.frame(); requestAnimationFrame(loop); };
+
+  const deep = parseInt(location.hash.slice(1));
+  if (!isNaN(deep) && deep >= 0 && deep < chain.n) {
+    const { cam, target } = view.liveFrame();
+    view.camera.position.copy(cam); view.controls.target.copy(target);
+    select(deep);
+  } else if (reduceMotion) {
+    const { cam, target } = view.liveFrame();
+    view.camera.position.copy(cam); view.controls.target.copy(target);
+  } else {
+    // open on the whole coil growing from 2009 to today, then glide down to the live tip
+    const R = view.radius();
+    view.camera.position.set(0, R * 2.6, R * 1.2); view.controls.target.set(0, 0, 0);
+    view.playReveal();
+    setTimeout(() => { if (!view.fly && view.follow) view.goLive(3.2); }, 3600);
+  }
+  const loop = () => { view.frame(); syncViews(); requestAnimationFrame(loop); };
   requestAnimationFrame(loop);
 
-  initMetrics(); renderLegend(); renderStats(); initTimeline(); initPointer(); initSearch(); initKeys();
-  setInterval(renderLive, 15000);
-  renderLive();
-  const fromHash = parseInt(location.hash.slice(1));
-  if (!isNaN(fromHash) && fromHash >= 0 && fromHash < chain.n) setTimeout(() => select(fromHash), reduceMotion ? 0 : 2600);
+  initViews(); initColor(); initTimeline(); initPointer(); initSearch(); initKeys();
+  renderLive(); renderSubtitle(); renderPending();
+  setInterval(() => { renderLive(); renderPending(); }, 1000);
+  setTimeout(hideHint, 16000);
 
-  // catch up to the live tip, then stream new blocks
   const before = chain.n;
   try {
     const r = await backfill(chain, () => {});
     for (let h = before; h < chain.n; h++) view.writeBlock(h);
-    view.syncCount(); renderStats(); drawSpark(); renderLive();
-    if (r.missing > 0) toast(`Showing blocks up to <b>#${fmtInt(chain.n - 1)}</b>. The saved snapshot is too old to fill the last ${fmtInt(r.missing)} blocks live.`);
+    if (chain.n > before) { view.syncCount(); drawSpark(); renderSubtitle(); if (view.follow && !view.revealing) view.goLive(1); }
+    if (r.missing > 0) toast(`Showing blocks up to <b>#${fmtInt(chain.n - 1)}</b>; the saved snapshot is too old to fill the last ${fmtInt(r.missing)} live.`);
   } catch { /* offline: snapshot only */ }
-  liveBlocks(b => {
-    const grew = putBlock(chain, b);
-    view.writeBlock(b.height);
-    if (grew) {
-      view.syncCount(); renderStats(); drawSpark(); renderLive();
-      if (performance.now() > 8000) toast(`New block <b>#${fmtInt(b.height)}</b> · ${fmtInt(b.tx_count)} txs · ${esc(b.extras?.pool?.name ?? 'Unknown miner')}`, () => select(b.height));
-    }
-  }, s => { liveState = s; renderLive(); });
-}
-let liveState: 'on' | 'off' | 'wait' = 'wait';
+  renderLive();
 
-/* ============================== legend ============================== */
-function initMetrics() {
-  document.querySelectorAll<HTMLButtonElement>('#metrics button').forEach(b => b.addEventListener('click', () => {
-    document.querySelectorAll('#metrics button').forEach(x => x.setAttribute('aria-checked', String(x === b)));
-    view.setMetric(b.dataset.m as Metric); renderLegend(); drawSpark();
-  }));
+  liveFeed({
+    block: b => {
+      const grew = putBlock(chain, b);
+      view.writeBlock(b.height);
+      if (!grew) return;
+      view.syncCount(); drawSpark(); renderSubtitle(); renderLive(); renderPending();
+      if (view.follow) view.goLive(1.4);
+      if (performance.now() > 8000) toast(`New block <b>#${fmtInt(b.height)}</b> joined the chain · ${fmtInt(b.tx_count)} transactions · ${esc(b.extras?.pool?.name ?? 'unknown miner')}`, () => select(b.height));
+    },
+    mempool: m => { mempool = m; view.setMempool(m.nextFill, m.vbPerSec / 250); renderPending(); },
+    state: s => { liveState = s; renderLive(); },
+  });
 }
-function renderLegend() {
-  const m = view.metric, info = METRICS[m], el = $('#scale');
-  if (m === 'pool') {
-    const recent = new Map<number, number>();
-    for (let h = Math.max(0, chain.n - PER_RING * 26); h < chain.n; h++) recent.set(chain.pool[h], (recent.get(chain.pool[h]) || 0) + 1);
-    const tot = Math.min(chain.n, PER_RING * 26);
-    const top = [...recent.entries()].filter(([i]) => i !== 0).sort((a, b) => b[1] - a[1]).slice(0, 11);
-    el.innerHTML = `<ul class="pools">${top.map(([i, c]) => `<li><i style="background:${poolColor(i)}"></i>${esc(chain.pools[i].replace(/ ?Pool$/i, ''))} <span style="color:var(--text-3)">${Math.round(c / tot * 100)}%</span></li>`).join('')}<li><i style="background:${poolColor(0)}"></i>Unknown</li></ul><div class="scale-note">${info.note} Shares are for the past year.</div>`;
-    return;
-  }
-  const [lo, hi] = view.legendRange();
-  el.innerHTML = `<div class="grad"></div><div class="grad-labels"><span>${info.fmt(Math.max(0, lo))}</span><span>${info.fmt(hi)}+</span></div><div class="scale-note">${info.note}</div>`;
-}
-function renderStats() {
-  let txs = 0, fees = 0;
-  for (let h = 0; h < chain.n; h++) { txs += chain.tx[h]; fees += chain.fee[h]; }
-  let supply = 0; for (let h = 0; h < chain.n; h++) supply += subsidy(h);
-  $('#stats').innerHTML = [
-    ['Blocks', fmtInt(chain.n)], ['Transactions', txs >= 1e9 ? (txs / 1e9).toFixed(2) + ' B' : (txs / 1e6).toFixed(0) + ' M'],
-    ['BTC issued', (supply / 1e6).toFixed(2) + ' M'], ['Fees paid', fmtInt(fees / 1e8) + ' BTC'],
-  ].map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('');
-}
+
+/* ============================== chrome ============================== */
 function renderLive() {
-  const el = $('#live'), t = $('#live-text'), tip = chain.n - 1;
-  el.className = 'live ' + (liveState === 'on' ? 'on' : liveState === 'off' ? 'off' : '');
-  t.textContent = `${liveState === 'on' ? 'Live' : liveState === 'off' ? 'Offline' : 'Syncing'} · #${fmtInt(tip)} · ${ago(chain.time[tip])}`;
+  const tip = chain.n - 1;
+  $('#live').className = 'live ' + (liveState === 'on' ? 'on' : liveState === 'off' ? 'off' : '');
+  $('#live-text').textContent = `${liveState === 'off' ? 'Offline' : 'Live'} · #${fmtInt(tip)} · ${ago(chain.time[tip])}`;
+}
+function renderSubtitle() { $('#subtitle').textContent = `${fmtInt(chain.n)} blocks linked since 3 Jan 2009`; }
+function renderPending() {
+  const since = Math.max(0, Date.now() / 1000 - chain.time[chain.n - 1]) / 60;
+  const waiting = mempool?.count ? `${fmtInt(mempool.count)} txs waiting` : 'Collecting transactions';
+  view.pendingText(`<b>Next block</b><span>${waiting}</span><span>${Math.floor(since)} min since last block</span>`);
+}
+let hintGone = false;
+function hideHint() { if (hintGone) return; hintGone = true; $('#hint').classList.add('gone'); }
+
+function initViews() {
+  document.querySelectorAll<HTMLButtonElement>('.views button').forEach(b => b.addEventListener('click', () => {
+    stopPlay(); if (cut >= 0) setCut(chain.n);
+    if (selected >= 0) closeDetail();
+    if (b.dataset.v === 'live') view.goLive(); else view.overview();
+    hideHint();
+  }));
+  $('#live').addEventListener('click', () => { if (selected >= 0) closeDetail(); stopPlay(); setCut(chain.n); view.goLive(); });
+}
+let lastView = '';
+function syncViews() {
+  const v = view.follow ? 'live' : view.far > .9 ? 'all' : '';
+  if (v === lastView) return; lastView = v;
+  document.querySelectorAll('.views button').forEach(b => b.setAttribute('aria-pressed', String((b as HTMLElement).dataset.v === v)));
+}
+
+function initColor() {
+  const btn = $('#color-btn'), menu = $('#color-menu');
+  const close = () => { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); };
+  const set = (m: Metric) => {
+    view.setMetric(m); drawSpark();
+    menu.querySelectorAll('li').forEach(li => li.setAttribute('aria-selected', String((li as HTMLElement).dataset.m === m)));
+    $('#color-label').textContent = menu.querySelector(`[data-m="${m}"] b`)!.textContent!;
+    $('#color-swatch').className = 'swatch' + (m === 'pool' ? ' pools' : '');
+  };
+  btn.addEventListener('click', () => { menu.hidden = !menu.hidden; btn.setAttribute('aria-expanded', String(!menu.hidden)); });
+  menu.querySelectorAll<HTMLElement>('li').forEach(li => li.addEventListener('click', () => { set(li.dataset.m as Metric); close(); }));
+  addEventListener('pointerdown', e => { if (!(e.target as HTMLElement).closest('.color')) close(); });
+  menu.querySelector('[data-m="tx"]')!.setAttribute('aria-selected', 'true');
 }
 
 /* ============================== timeline ============================== */
-let cut = -1; // -1 = show everything
+let cut = -1;
 let playing = false, playT = 0;
-function hToX(h: number) { return h / Math.max(1, chain.n - 1); }
+const hToX = (h: number) => h / Math.max(1, chain.n - 1);
 function drawSpark() {
   const cv = $('#spark') as HTMLCanvasElement, r = cv.getBoundingClientRect(), dpr = Math.min(2, devicePixelRatio);
+  if (!r.width) return;
   cv.width = r.width * dpr; cv.height = r.height * dpr;
   const x = cv.getContext('2d')!; x.scale(dpr, dpr);
-  const rings = Math.ceil(chain.n / PER_RING), W = r.width, H = r.height;
-  const grad = x.createLinearGradient(0, H, 0, 0);
-  grad.addColorStop(0, 'rgba(140,58,6,.5)'); grad.addColorStop(.6, 'rgba(247,147,26,.85)'); grad.addColorStop(1, 'rgba(255,220,160,1)');
-  x.fillStyle = grad;
-  for (let e = 0; e < rings; e++) {
+  const W = r.width, H = r.height, bins = Math.min(260, Math.floor(W / 3)), per = chain.n / bins;
+  for (let b = 0; b < bins; b++) {
     let s = 0, k = 0;
-    for (let h = e * PER_RING; h < Math.min(chain.n, (e + 1) * PER_RING); h += 3) { s += view.t[h]; k++; }
-    const v = k ? s / k : 0, bw = W / rings;
-    x.globalAlpha = cut >= 0 && e * PER_RING > cut ? .25 : 1;
-    x.fillRect(e * bw, H - 8 - v * (H - 18), Math.max(1, bw - .6), v * (H - 18) + 2);
+    for (let h = Math.floor(b * per); h < Math.min(chain.n, (b + 1) * per); h += 5) { s += view.t[h]; k++; }
+    const v = k ? s / k : 0, bw = W / bins, hgt = 3 + v * (H - 22);
+    x.fillStyle = cut >= 0 && b * per > cut ? 'rgba(247,147,26,.16)' : `rgba(247,147,26,${.35 + v * .55})`;
+    x.fillRect(b * bw + .5, H - 6 - hgt, Math.max(1, bw - 1.2), hgt);
   }
-  x.globalAlpha = 1;
-  x.fillStyle = 'rgba(237,233,225,.35)'; x.font = '500 10px "Geist Mono", monospace';
-  let lastYear = 0;
-  for (let h = 0; h < chain.n; h += PER_RING) {
-    const y = new Date(chain.time[h] * 1000).getUTCFullYear();
-    if (y !== lastYear && y % 2 === 1) { x.fillText(String(y), hToX(h) * W + 3, 12); lastYear = y; }
-    if (y !== lastYear) lastYear = y;
+  x.fillStyle = 'rgba(238,234,226,.3)'; x.font = '500 10px "Geist Mono", monospace';
+  let last = 0, lastX = -1e9;
+  for (let h = 0; h < chain.n; h += 2016) {
+    const y = new Date(chain.time[h] * 1000).getUTCFullYear(), px = hToX(h) * W;
+    if (y !== last && (y % 3 === 0 || y === 2009) && px - lastX > 42) { x.fillText(String(y), px + 3, 11); lastX = px; }
+    last = y;
   }
   placeCursor();
 }
 function placeCursor() {
-  const h = cut < 0 ? chain.n - 1 : cut;
-  $('#cursor').style.left = `${hToX(h) * 100}%`;
-  const lbl = $('#cursor-label'), x = hToX(h);
-  lbl.style.transform = x > .88 ? 'translateX(-100%)' : x < .08 ? 'translateX(0)' : 'translateX(-50%)';
-  lbl.style.left = x > .88 ? '100%' : x < .08 ? '0' : '50%';
-  $('#cursor-label').textContent = cut < 0 ? `Now · #${fmtInt(h)}` : `#${fmtInt(h)} · ${fmtDate(chain.time[h])}`;
+  const h = cut < 0 ? chain.n - 1 : cut, x = hToX(h), lbl = $('#cursor-label');
+  $('#cursor').style.left = `${x * 100}%`;
+  lbl.textContent = cut < 0 ? `Now · #${fmtInt(h)}` : `#${fmtInt(h)} · ${fmtDate(chain.time[h])}`;
+  lbl.style.left = x > .85 ? 'auto' : x < .1 ? '0' : '50%';
+  lbl.style.right = x > .85 ? '0' : 'auto';
+  lbl.style.transform = x > .85 || x < .1 ? 'none' : 'translateX(-50%)';
 }
 function setCut(h: number) {
   cut = h >= chain.n - 1 ? -1 : Math.max(0, Math.round(h));
-  view.mat.uniforms.uCut.value = cut < 0 ? 1e9 : cut;
-  placeCursor(); drawSparkThrottled();
+  view.setCut(cut < 0 ? 1e9 : cut);
+  placeCursor(); drawSparkSoon();
 }
-let sparkPending = false;
-function drawSparkThrottled() { if (sparkPending) return; sparkPending = true; requestAnimationFrame(() => { sparkPending = false; drawSpark(); }); }
+let sparkQueued = false;
+function drawSparkSoon() { if (sparkQueued) return; sparkQueued = true; requestAnimationFrame(() => { sparkQueued = false; drawSpark(); }); }
 function initTimeline() {
-  const track = $('#track'), marks = $('#marks');
+  const rail = $('#rail'), marks = $('#marks');
   marks.innerHTML = LANDMARKS.filter(l => l.h < chain.n).map(l => `<div class="mark" data-h="${l.h}" style="left:${hToX(l.h) * 100}%"><span>${esc(l.name)}</span></div>`).join('');
   marks.querySelectorAll<HTMLElement>('.mark').forEach(m => m.addEventListener('pointerdown', e => { e.stopPropagation(); select(+m.dataset.h!); }));
-  const at = (e: PointerEvent) => { const r = track.getBoundingClientRect(); return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * (chain.n - 1); };
+  const at = (e: PointerEvent) => { const r = rail.getBoundingClientRect(); return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * (chain.n - 1); };
   let drag = false;
-  track.addEventListener('pointerdown', e => { drag = true; track.setPointerCapture(e.pointerId); stopPlay(); setCut(at(e)); });
-  track.addEventListener('pointermove', e => { if (drag) setCut(at(e)); });
-  track.addEventListener('pointerup', () => { drag = false; });
-  track.addEventListener('dblclick', () => setCut(chain.n));
+  rail.addEventListener('pointerdown', e => {
+    drag = true; rail.setPointerCapture(e.pointerId); stopPlay(); hideHint();
+    if (selected >= 0) closeDetail();
+    if (view.far < .9) view.overview(1.4);
+    setCut(at(e));
+  });
+  rail.addEventListener('pointermove', e => { if (drag) setCut(at(e)); });
+  rail.addEventListener('pointerup', () => { drag = false; });
   $('#play').addEventListener('click', () => (playing ? stopPlay() : startPlay()));
   addEventListener('resize', drawSpark);
   drawSpark();
+  let prev = performance.now();
   const tick = (now: number) => {
+    const dt = Math.min(.05, (now - prev) / 1000); prev = now;
     if (playing) {
-      playT += 1 / 60 / 26;
-      const k = Math.min(1, playT), e = k < .5 ? 2 * k * k : 1 - (-2 * k + 2) ** 2 / 2;
+      playT = Math.min(1, playT + dt / 22);
+      const e = playT < .5 ? 2 * playT * playT : 1 - (-2 * playT + 2) ** 2 / 2;
       setCut(e * (chain.n - 1));
-      if (k >= 1) stopPlay();
+      if (playT >= 1) { stopPlay(); view.goLive(2.4); }
     }
-    void now; requestAnimationFrame(tick);
+    requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);
 }
 function startPlay() {
-  playing = true; playT = cut < 0 ? 0 : cut / (chain.n - 1);
+  playing = true; playT = 0; hideHint();
+  if (selected >= 0) closeDetail();
   $('#play').innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 4h3.5v12H5zM11.5 4H15v12h-3.5z"/></svg>';
   $('#play').setAttribute('aria-label', 'Pause');
-  if (selected >= 0) closeDetail();
-  view.overview(2);
+  view.overview(1.6);
 }
 function stopPlay() {
+  if (!playing) return;
   playing = false;
   $('#play').innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 4l10 6-10 6z"/></svg>';
-  $('#play').setAttribute('aria-label', 'Replay history from 2009');
+  $('#play').setAttribute('aria-label', 'Replay the chain from 2009');
 }
 
 /* ============================== pointer ============================== */
 function initPointer() {
   const cv = $('#gl'), tip = $('#tip');
-  let down = { x: 0, y: 0 };
-  cv.addEventListener('pointermove', e => { lastPointer = { x: e.clientX, y: e.clientY, move: true }; });
-  cv.addEventListener('pointerleave', () => { lastPointer.move = false; view.hover(-1); tip.hidden = true; });
-  cv.addEventListener('pointerdown', e => { down = { x: e.clientX, y: e.clientY }; });
+  let down = { x: 0, y: 0 }, mouse = true, pend: { x: number; y: number } | null = null;
+  cv.addEventListener('pointermove', e => { if (e.pointerType === 'mouse') pend = { x: e.clientX, y: e.clientY }; });
+  cv.addEventListener('pointerleave', () => { pend = null; view.hover(-1); tip.hidden = true; });
+  cv.addEventListener('pointerdown', e => { down = { x: e.clientX, y: e.clientY }; mouse = e.pointerType === 'mouse'; if (!mouse) tip.hidden = true; });
   cv.addEventListener('pointerup', e => {
     if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return;
     const h = view.pick(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
     if (h >= 0) select(h); else if (selected >= 0) closeDetail();
   });
-  let isMouse = true;
-  cv.addEventListener('pointerdown', e => { isMouse = e.pointerType === 'mouse'; if (!isMouse) tip.hidden = true; });
-  const hoverLoop = () => {
-    if (lastPointer.move && isMouse) {
-      lastPointer.move = false;
-      const h = view.pick(lastPointer.x / innerWidth * 2 - 1, -(lastPointer.y / innerHeight) * 2 + 1);
+  const loop = () => {
+    if (pend && mouse) {
+      const p = pend; pend = null;
+      const h = view.pick(p.x / innerWidth * 2 - 1, -(p.y / innerHeight) * 2 + 1);
       view.hover(h);
       cv.style.cursor = h >= 0 ? 'pointer' : 'grab';
       if (h >= 0) {
-        tip.hidden = false;
-        tip.style.left = lastPointer.x + 'px'; tip.style.top = lastPointer.y + 'px';
         const lm = landmarkAt(h);
-        tip.innerHTML = `<b>#${fmtInt(h)}</b> <span>· ${fmtDate(chain.time[h])}</span><br>${fmtInt(chain.tx[h])} txs <span>·</span> ${fmtBtc(chain.fee[h] / 1e8)} fees <span>·</span> ${esc(chain.pools[chain.pool[h]])}${lm ? `<br><span style="color:var(--teal)">${esc(lm.name)}</span>` : ''}`;
+        tip.hidden = false; tip.style.left = p.x + 'px'; tip.style.top = p.y + 'px';
+        tip.innerHTML = `<b>#${fmtInt(h)}</b> <span>· ${fmtDate(chain.time[h])}</span><br>${fmtInt(chain.tx[h])} transactions${lm ? ` <span>·</span> <span style="color:var(--teal)">${esc(lm.name)}</span>` : ''}`;
       } else tip.hidden = true;
     }
-    requestAnimationFrame(hoverLoop);
+    requestAnimationFrame(loop);
   };
-  requestAnimationFrame(hoverLoop);
+  requestAnimationFrame(loop);
 }
 
-/* ============================== detail panel ============================== */
-const cache = new Map<number, { hash: string; info: any; txids?: string[] }>();
+/* ============================== block detail ============================== */
+const cache = new Map<number, { hash: string; info: any; txids: string[] }>();
 let token = 0;
-function select(h: number, fly = true) {
+function select(h: number) {
   h = Math.max(0, Math.min(chain.n - 1, h));
-  selected = h; stopPlay();
+  selected = h; stopPlay(); hideHint();
   if (cut >= 0 && h > cut) setCut(chain.n);
-  view.select(h, fly);
+  view.select(h); view.focusBlock(h);
   history.replaceState(null, '', `#${h}`);
   renderDetail(h);
 }
@@ -232,91 +260,76 @@ function closeDetail() {
   history.replaceState(null, '', location.pathname);
 }
 function renderDetail(h: number) {
-  const el = $('#detail'), my = ++token, c = chain;
-  const lm = landmarkAt(h), interval = h > 0 ? (c.time[h] - c.time[h - 1]) / 60 : 0;
-  const busiest = h === argmax(c.tx), richest = h === argmax(c.fee);
+  const el = $('#detail'), my = ++token, c = chain, lm = landmarkAt(h);
+  const gap = h > 0 ? Math.max(0, (c.time[h] - c.time[h - 1]) / 60) : 0;
   el.hidden = false;
   el.innerHTML = `
     <div class="d-head">
       <div>
-        <div class="label">Block</div>
+        <div class="d-kicker">Block</div>
         <div class="d-height"><small>#</small>${fmtInt(h)}</div>
         <div class="d-when">${fmtDate(c.time[h], true)} · ${ago(c.time[h])}</div>
       </div>
       <button class="x" id="d-close" aria-label="Close">×</button>
     </div>
-    ${lm ? `<div class="badge"><span>★</span><span><b style="font-weight:600">${esc(lm.name)}.</b> ${esc(lm.desc)}</span></div>` : ''}
-    ${busiest ? `<div class="badge">The most transactions of any block ever.</div>` : ''}
-    ${richest ? `<div class="badge">The highest total fees of any block ever.</div>` : ''}
-    <dl class="grid">
+    ${lm ? `<div class="badge"><b>${esc(lm.name)}.</b> ${esc(lm.desc)}</div>` : ''}
+    <dl class="facts">
       <div><dt>Transactions</dt><dd>${fmtInt(c.tx[h])}</dd></div>
       <div><dt>Size</dt><dd>${fmtSize(c.size[h])}</dd></div>
       <div><dt>Fees</dt><dd>${fmtBtc(c.fee[h] / 1e8)}</dd></div>
       <div><dt>Miner reward</dt><dd>${fmtBtc(subsidy(h) + c.fee[h] / 1e8)}</dd></div>
-      <div><dt>Mined by</dt><dd class="pool"><i style="background:${poolColor(c.pool[h])}"></i>${esc(c.pools[c.pool[h]])}</dd></div>
-      <div><dt>After previous</dt><dd>${h > 0 ? fmtMin(Math.max(0, interval)) : '—'}</dd></div>
-      <div><dt>Median fee</dt><dd id="d-median"><div class="skel" style="width:60%"></div></dd></div>
-      <div><dt>Difficulty</dt><dd>${fmtDiff(c.epochDifficulty[Math.floor(h / PER_RING)] ?? c.epochDifficulty[c.epochDifficulty.length - 1])}</dd></div>
+      <div><dt>Mined by</dt><dd><i style="background:${poolColor(c.pool[h])}"></i>${esc(c.pools[c.pool[h]].replace(/ ?Pool$/i, ''))}</dd></div>
+      <div><dt>After previous</dt><dd>${h > 0 ? fmtMin(gap) : '—'}</dd></div>
     </dl>
-    <div class="fees-bar" id="d-fees"></div>
-    <div><div class="label" style="margin-bottom:8px">Block hash</div><div class="hash" id="d-hash"><div class="skel" style="flex:1"></div></div></div>
+    <div><div class="sec-label">Fingerprint (block hash)</div><div class="hash" id="d-hash"><div class="skel" style="flex:1"></div></div></div>
     <div>
-      <div class="label" style="margin-bottom:8px">Transactions</div>
-      <p class="muted" style="margin:0 0 8px">Each glowing dot above the block is a transaction${c.tx[h] > 3000 ? ' (first 3,000 shown)' : ''}, coloured by fee rate.</p>
-      <ul class="txs" id="d-txs"><li><div class="skel"></div></li><li><div class="skel"></div></li><li><div class="skel"></div></li></ul>
+      <div class="sec-label">Transactions</div>
+      <p class="muted" style="margin-bottom:8px">The dots above the block are its transactions${c.tx[h] > 2500 ? ' (first 2,500)' : ''}, brighter for higher fees.</p>
+      <ul class="txs" id="d-txs"><li><div class="skel"></div></li><li><div class="skel"></div></li></ul>
     </div>
-    <div class="d-actions">
-      <button class="btn" id="d-prev" ${h === 0 ? 'disabled' : ''}>← Prev</button>
-      <button class="btn" id="d-next" ${h >= c.n - 1 ? 'disabled' : ''}>Next →</button>
+    <div class="d-nav">
+      <button class="btn" id="d-prev" ${h === 0 ? 'disabled' : ''} aria-label="Previous block">←</button>
+      <button class="btn" id="d-next" ${h >= c.n - 1 ? 'disabled' : ''} aria-label="Next block">→</button>
       <button class="btn" id="d-share">Copy link</button>
-      <a class="btn primary" id="d-ext" href="https://mempool.space/block/${h}" target="_blank" rel="noopener">mempool.space ↗</a>
+      <a class="btn primary" id="d-ext" href="https://mempool.space/block/${h}" target="_blank" rel="noopener">Explore ↗</a>
     </div>`;
   $('#d-close').onclick = closeDetail;
   $('#d-prev').onclick = () => select(h - 1);
   $('#d-next').onclick = () => select(h + 1);
   $('#d-share').onclick = async () => {
-    const url = `${location.origin}${location.pathname}#${h}`;
-    try { await navigator.clipboard.writeText(url); $('#d-share').textContent = 'Link copied'; } catch { prompt('Copy this link', url); }
+    try { await navigator.clipboard.writeText(`${location.origin}${location.pathname}#${h}`); $('#d-share').textContent = 'Copied'; } catch { $('#d-share').textContent = `…/#${h}`; }
   };
   view.showTxCloud(h);
   loadDetail(h).then(d => {
-    if (my !== token || !d) return;
-    const info = d.info?.extras;
-    const hashEl = $('#d-hash');
+    if (my !== token) return;
     const z = d.hash.match(/^0*/)![0].length;
-    hashEl.innerHTML = `<code><span class="z">${d.hash.slice(0, z)}</span>${d.hash.slice(z)}</code><button class="copy" id="d-copy">Copy</button>`;
+    $('#d-hash').innerHTML = `<code><span class="z">${d.hash.slice(0, z)}</span>${d.hash.slice(z)}</code><button class="copy" id="d-copy">Copy</button>`;
     $('#d-copy').onclick = () => navigator.clipboard.writeText(d.hash).then(() => ($('#d-copy').textContent = 'Copied'));
     ($('#d-ext') as HTMLAnchorElement).href = `https://mempool.space/block/${d.hash}`;
-    $('#d-median').textContent = info?.medianFee != null ? `${info.medianFee < 10 ? info.medianFee.toFixed(1) : Math.round(info.medianFee)} sat/vB` : '—';
-    const fr: number[] | undefined = info?.feeRange;
-    if (fr && fr.length > 1 && c.tx[h] > 1) {
-      const colors = ['#5A2A06', '#8C3A06', '#C45F0A', '#F7931A', '#FFB547', '#FFD89A', '#FFF1D6'];
-      $('#d-fees').innerHTML = `<div class="label">Fee rates paid (sat/vB)</div><div class="bar">${fr.slice(0, 7).map((_, i) => `<i style="background:${colors[i]}"></i>`).join('')}</div><div class="ticks"><span>${Math.round(fr[0])} min</span><span>${Math.round(fr[Math.floor(fr.length / 2)])} median</span><span>${fmtInt(fr[fr.length - 1])} max</span></div>`;
-    }
-    view.showTxCloud(h, fr);
-    const txs = d.txids || [];
-    $('#d-txs').innerHTML = txs.slice(0, 6).map((t, i) => `<li><a href="https://mempool.space/tx/${t}" target="_blank" rel="noopener"><span>${t.slice(0, 10)}…${t.slice(-8)}</span><span>${i === 0 ? 'coinbase' : '#' + i}</span></a></li>`).join('') +
-      (txs.length > 6 ? `<li><a href="https://mempool.space/block/${d.hash}" target="_blank" rel="noopener"><span>+ ${fmtInt(txs.length - 6)} more</span><span>↗</span></a></li>` : '');
+    view.showTxCloud(h, d.info?.extras?.feeRange);
+    const txs = d.txids;
+    $('#d-txs').innerHTML = txs.slice(0, 5).map((t, i) => `<li><a href="https://mempool.space/tx/${t}" target="_blank" rel="noopener"><span>${t.slice(0, 10)}…${t.slice(-8)}</span><span>${i === 0 ? 'new coins' : '#' + i}</span></a></li>`).join('') +
+      (txs.length > 5 ? `<li><a href="https://mempool.space/block/${d.hash}" target="_blank" rel="noopener"><span>+ ${fmtInt(txs.length - 5)} more</span><span>↗</span></a></li>` : '');
   }).catch(() => {
     if (my !== token) return;
-    $('#d-hash').innerHTML = '<span class="muted">Live details unavailable right now.</span>';
-    $('#d-median').textContent = '—'; $('#d-txs').innerHTML = '';
+    $('#d-hash').innerHTML = '<span class="muted">Live details are unavailable right now.</span>';
+    $('#d-txs').innerHTML = '';
   });
 }
 async function loadDetail(h: number) {
   if (cache.has(h)) return cache.get(h)!;
   const hash = (await api.hashAt(h)).trim();
-  const [info, txids] = await Promise.all([api.block(hash).catch(() => null), api.txids(hash).catch(() => [])]);
+  const [info, txids] = await Promise.all([api.block(hash).catch(() => null), api.txids(hash).catch(() => [] as string[])]);
   const d = { hash, info, txids };
   cache.set(h, d);
   return d;
 }
-const argmaxCache = new Map<any, { n: number; i: number }>();
-function argmax(a: ArrayLike<number>) {
-  const k = argmaxCache.get(a);
-  if (k && k.n === chain.n) return k.i;
+const argmaxCache: Record<string, [number, number]> = {};
+function argmax(name: 'tx' | 'fee') {
+  const a = chain[name], k = argmaxCache[name];
+  if (k && k[0] === chain.n) return k[1];
   let i = 0; for (let h = 1; h < chain.n; h++) if (a[h] > a[i]) i = h;
-  argmaxCache.set(a, { n: chain.n, i });
+  argmaxCache[name] = [chain.n, i];
   return i;
 }
 
@@ -331,10 +344,10 @@ function suggestions(q: string): Sugg[] {
   q = q.trim();
   const out: Sugg[] = [];
   if (!q) {
-    LANDMARKS.forEach(l => out.push({ title: l.name, meta: `#${fmtInt(l.h)}`, note: l.desc, go: () => select(l.h) }));
-    out.push({ title: 'Busiest block ever', meta: `#${fmtInt(argmax(chain.tx))}`, go: () => select(argmax(chain.tx)) });
-    out.push({ title: 'Highest fees ever', meta: `#${fmtInt(argmax(chain.fee))}`, go: () => select(argmax(chain.fee)) });
     out.push({ title: 'Latest block', meta: `#${fmtInt(chain.n - 1)}`, go: () => select(chain.n - 1) });
+    LANDMARKS.forEach(l => out.push({ title: l.name, meta: `#${fmtInt(l.h)}`, note: l.desc, go: () => select(l.h) }));
+    out.push({ title: 'Most transactions ever', meta: `#${fmtInt(argmax('tx'))}`, go: () => select(argmax('tx')) });
+    out.push({ title: 'Highest fees ever', meta: `#${fmtInt(argmax('fee'))}`, go: () => select(argmax('fee')) });
     return out;
   }
   const num = q.replace(/[#,\s]/g, '');
@@ -342,13 +355,13 @@ function suggestions(q: string): Sugg[] {
   if (/^[0-9a-f]{64}$/i.test(q)) {
     const isBlock = q.startsWith('00000000');
     out.push({
-      title: isBlock ? 'Find this block hash' : 'Find this transaction', meta: q.slice(0, 8) + '…', go: async () => {
+      title: isBlock ? 'Find this block' : 'Find this transaction', meta: q.slice(0, 8) + '…', go: async () => {
         setSuggest([{ title: 'Looking it up…', go: () => {} }], true);
         try {
           const h = isBlock ? (await api.block(q)).height : (await api.tx(q)).status?.block_height;
           if (h == null) throw new Error('unconfirmed');
-          select(h); hideSuggest();
-          if (!isBlock) toast(`Transaction ${q.slice(0, 10)}… is in block <b>#${fmtInt(h)}</b>`);
+          hideSuggest(); select(h);
+          if (!isBlock) toast(`That transaction is in block <b>#${fmtInt(h)}</b>`);
         } catch { setSuggest([{ title: 'Not found, or not confirmed yet.', go: () => {} }], true); }
       },
     });
@@ -361,23 +374,21 @@ function suggestions(q: string): Sugg[] {
     }
   }
   const lq = q.toLowerCase();
-  LANDMARKS.filter(l => l.name.toLowerCase().includes(lq) || l.desc.toLowerCase().includes(lq)).forEach(l => out.push({ title: l.name, meta: `#${fmtInt(l.h)}`, note: l.desc, go: () => select(l.h) }));
-  if (!out.length) out.push({ title: 'Try a block height, a date like 2017-12-17, a block hash or a transaction ID', go: () => {} });
+  LANDMARKS.filter(l => (l.name + ' ' + l.desc).toLowerCase().includes(lq)).forEach(l => out.push({ title: l.name, meta: `#${fmtInt(l.h)}`, note: l.desc, go: () => select(l.h) }));
+  if (!out.length) out.push({ title: 'Try a block number, a date like 2017-12-17, or a transaction ID', go: () => {} });
   return out;
 }
 let current: Sugg[] = [], active = 0;
 function setSuggest(list: Sugg[], msg = false) {
   current = list; active = 0;
-  const ul = $('#suggest');
-  ul.hidden = false;
+  const ul = $('#suggest'); ul.hidden = false;
   ul.innerHTML = list.map((s, i) => `<li role="option" data-i="${i}" aria-selected="${i === 0 && !msg}" class="${msg ? 'msg' : ''}"><b>${esc(s.title)}</b><span>${esc(s.meta || '')}</span>${s.note ? `<small>${esc(s.note)}</small>` : ''}</li>`).join('');
   ul.querySelectorAll('li').forEach(li => li.addEventListener('mousedown', e => { e.preventDefault(); run(+(li as HTMLElement).dataset.i!); }));
 }
 function hideSuggest() { $('#suggest').hidden = true; }
 function run(i: number) {
   const s = current[i]; if (!s) return;
-  const r = s.go();
-  if (!(r instanceof Promise)) { hideSuggest(); ($('#q') as HTMLInputElement).blur(); }
+  if (!(s.go() instanceof Promise)) { hideSuggest(); ($('#q') as HTMLInputElement).blur(); }
 }
 function initSearch() {
   const q = $('#q') as HTMLInputElement;
@@ -390,7 +401,7 @@ function initSearch() {
       e.preventDefault(); active = (active + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
       items.forEach((li, i) => li.setAttribute('aria-selected', String(i === active)));
       items[active]?.scrollIntoView({ block: 'nearest' });
-    } else if (e.key === 'Escape') { q.blur(); }
+    } else if (e.key === 'Escape') q.blur();
   });
   $('#search').addEventListener('submit', e => { e.preventDefault(); run(active); });
 }
@@ -398,13 +409,12 @@ function initSearch() {
 /* ============================== keys & toast ============================== */
 function initKeys() {
   addEventListener('keydown', e => {
-    const typing = (e.target as HTMLElement).tagName === 'INPUT';
-    if (e.key === '/' && !typing) { e.preventDefault(); ($('#q') as HTMLInputElement).focus(); }
-    if (typing) return;
+    if ((e.target as HTMLElement).tagName === 'INPUT') return;
+    if (e.key === '/') { e.preventDefault(); ($('#q') as HTMLInputElement).focus(); }
     if (e.key === 'Escape' && selected >= 0) closeDetail();
     if (e.key === 'ArrowLeft' && selected > 0) select(selected - 1);
     if (e.key === 'ArrowRight' && selected >= 0 && selected < chain.n - 1) select(selected + 1);
-    if (e.key === ' ' && !typing) { e.preventDefault(); playing ? stopPlay() : startPlay(); }
+    if (e.key.toLowerCase() === 'l') { if (selected >= 0) closeDetail(); view.goLive(); }
   });
 }
 let toastTimer = 0;
