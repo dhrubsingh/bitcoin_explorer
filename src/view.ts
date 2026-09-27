@@ -29,7 +29,7 @@ export const POOL_COLORS = ['#3A3E4A', '#F7931A', '#5FD4C4', '#A78BFA', '#60A5FA
 export const poolColor = (i: number) => (i === 0 ? POOL_COLORS[0] : POOL_COLORS[1 + ((i - 1) % 15)]);
 
 const tf: Record<Metric, (v: number) => number> = {
-  tx: v => Math.log1p(v), pool: v => Math.log1p(v), fees: v => Math.log10(1 + v * 1e5), size: v => Math.log1p(v * 8), interval: v => Math.log1p(v),
+  tx: v => Math.log1p(v), pool: v => Math.log1p(v), fees: v => Math.log10(1 + v * 1e5), size: v => Math.log1p(v * 8), interval: v => Math.log1p(v), price: v => Math.log10(1 + v),
 };
 
 export function blockPos(i: number) {
@@ -232,7 +232,6 @@ export class View {
   dust: THREE.Points;
   flash: THREE.Sprite; shock: THREE.Mesh;
   tipLabels: CSS2DObject[] = [];
-  landmarkLabels: CSS2DObject[] = [];
   cloud: THREE.Points | null = null; cloudT = 0;
   onUserMove: () => void = () => {};
   onTxLand: () => void = () => {};
@@ -487,16 +486,11 @@ export class View {
     const R = this.radius();
     this.flyTo(new THREE.Vector3(0, R * 2.3, R * 1.3), new THREE.Vector3(0, 0, 0), dur);
   }
-  focusBlock(h: number, dur = 1.6) { this.follow = false; const { cam, target } = this.blockFrame(h); this.flyTo(cam, target, dur); }
-  /** a long cinematic flight that arcs up over the coil and comes down onto the block; returns its duration */
-  journeyTo(h: number, done?: () => void) {
-    this.follow = false;
-    const { cam, target } = this.blockFrame(h, 7.5);
-    target.y -= 1.6;                                         // keep the block above the result card
-    const span = this.camera.position.distanceTo(cam);
-    const dur = Math.min(7, 3.2 + Math.log10(1 + span) * 1.1);
-    this.flyTo(cam, target, dur, Math.min(span * .55, this.radius() * 1.2) + 12, done);
-    return dur;
+  focusBlock(h: number, dur?: number) {
+    this.follow = false; const { cam, target } = this.blockFrame(h);
+    // long hops arc up over the coil instead of cutting through other blocks
+    const hop = this.controls.target.distanceTo(target);
+    this.flyTo(cam, target, dur ?? Math.min(3.4, 1.4 + this.far * 1.4 + Math.log10(1 + hop) * .45), Math.min(hop * .35, 260) + (this.far > .5 ? 25 : 0));
   }
   flyTo(to: THREE.Vector3, target: THREE.Vector3, dur: number, lift = 0, done?: () => void) {
     this.drift = null; this.idle = 0;
@@ -534,22 +528,33 @@ export class View {
     this.cloud = new THREE.Points(g, new THREE.PointsMaterial({ size: .05, map: GLOW, vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0 }));
     this.cloudT = 0; this.scene.add(this.cloud);
   }
-  addLandmarks(list: { h: number; name: string }[]) {
-    for (const l of list) {
-      if (l.h >= this.chain.n) continue;
-      const el = document.createElement('div'); el.className = 'lm-lbl'; el.textContent = l.name;
-      const o = new CSS2DObject(el); o.position.set(this.px[l.h], 1.4, this.pz[l.h]); o.userData.h = l.h;
-      this.landmarkLabels.push(o); this.scene.add(o);
+  /** event markers: a thin beam of light over each event block plus a label */
+  setEvents(list: { h: number; name: string; kind: string; major?: boolean }[]) {
+    const colors: Record<string, THREE.Color> = { protocol: new THREE.Color(.37, .83, .77), market: new THREE.Color(1, .6, .15), world: new THREE.Color(.66, .55, 1) };
+    const beam = new THREE.BoxGeometry(1, 1, 1);
+    for (const e of list) {
+      if (e.h < 0 || e.h >= this.chain.n) continue;
+      const col = colors[e.kind] ?? colors.protocol;
+      const m = new THREE.Mesh(beam, new THREE.MeshBasicMaterial({ color: col.clone().multiplyScalar(1.4), transparent: true, opacity: .45, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false }));
+      m.scale.set(.018, 2.2, .018);
+      m.position.set(this.px[e.h], this.sizeOf(e.h) + 1.25, this.pz[e.h]);
+      this.scene.add(m);
+      const el = document.createElement('div'); el.className = `ev-lbl ${e.kind}`; el.textContent = e.name;
+      const o = new CSS2DObject(el); o.position.set(this.px[e.h], this.sizeOf(e.h) + 2.7, this.pz[e.h]);
+      o.userData = { h: e.h, major: !!e.major, beam: m };
+      this.events.push(o); this.scene.add(o);
     }
   }
+  events: CSS2DObject[] = [];
 
   resize() {
     this.camera.aspect = innerWidth / innerHeight; this.camera.updateProjectionMatrix();
     this.renderer.setSize(innerWidth, innerHeight); this.composer.setSize(innerWidth, innerHeight); this.labels.setSize(innerWidth, innerHeight);
   }
 
-  frame() {
-    const dt = Math.min(this.clock.getDelta(), .05), u = this.mat.uniforms, n = this.chain.n;
+  frame(fixedDt?: number) {
+    const real = this.clock.getDelta();
+    const dt = fixedDt ?? Math.min(real, .05), u = this.mat.uniforms, n = this.chain.n;
     u.uTime.value += dt; this.grain.uniforms.uTime.value = u.uTime.value % 10;
     u.uWaveT.value = Math.min(99, u.uWaveT.value + dt);
     if (u.uMix.value < 1) u.uMix.value = Math.min(1, u.uMix.value + dt * 1.6);
@@ -646,7 +651,14 @@ export class View {
       if (l.userData.h !== h) { l.userData.h = h; l.element.innerHTML = `<b>#${fmtInt(h)}</b><span>${fmtInt(this.chain.tx[h])} tx</span>`; }
       l.position.set(this.px[h], this.sizeOf(h) + .7, this.pz[h]);
     });
-    this.landmarkLabels.forEach(l => { l.visible = this.far > .6 && l.userData.h <= Math.min(cut, u.uReveal.value); });
+    // event labels: the big ones from afar, every one when it is near the stretch you are looking at
+    const shown = Math.min(cut, u.uReveal.value);
+    this.events.forEach(o => {
+      const h = o.userData.h, near = Math.abs(h - focus) < 40;
+      o.visible = h <= shown && (this.far > .6 ? o.userData.major : this.far < .3 && near);
+      o.userData.beam.visible = h <= shown && this.far < .5 && Math.abs(h - focus) < 400;
+      if (o.visible && this.far > .6) o.position.y = 1.4; else o.position.y = this.sizeOf(h) + 2.7;
+    });
     if (this.cloud) { this.cloudT = Math.min(1, this.cloudT + dt * 1.5); (this.cloud.material as THREE.PointsMaterial).opacity = this.cloudT; }
 
     this.composer.render();

@@ -6,9 +6,9 @@ export default function handler(req: Request) {
   const raw = url.searchParams.get('h') ?? '';
   const h = /^\d{1,7}$/.test(raw) ? +raw : null;
   const origin = url.origin;
-  const label = h === null ? 'Find your block' : `Bitcoin block #${h.toLocaleString('en-US')}`;
+  const label = h === null ? 'Every Bitcoin block, live' : `Bitcoin block #${h.toLocaleString('en-US')}`;
   const title = `${label} · The Chain`;
-  const desc = 'Every Bitcoin block ever mined, linked in one chain and growing live. Find the block you were born in.';
+  const desc = 'Every Bitcoin block ever mined, linked in one chain and growing live, with the price and every big moment in Bitcoin history.';
   const img = `${origin}/api/og${h === null ? '' : `?h=${h}`}`;
   const dest = h === null ? '/' : `/#${h}`;
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">

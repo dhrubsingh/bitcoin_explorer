@@ -7,6 +7,7 @@ export interface Chain {
   size: Uint32Array;      // bytes
   fee: Float64Array;      // sats
   pool: Uint8Array;       // index into pools
+  usd: Float32Array;      // BTC/USD on the day the block was mined (0 before Aug 2010)
   pools: string[];
   epochDifficulty: number[];
 }
@@ -42,7 +43,7 @@ async function gunzip(bytes: Uint8Array): Promise<ArrayBuffer> {
 }
 
 export async function loadChain(onProgress: (f: number) => void): Promise<Chain> {
-  const meta = await (await fetch('/data/meta.json', { cache: 'no-cache' })).json();
+  const [meta] = await Promise.all([fetch('/data/meta.json', { cache: 'no-cache' }).then(r => r.json()), loadPrice()]);
   const [base, recent] = await Promise.all([
     fetchWithProgress(`/data/base.bin.gz?n=${meta.baseCount}`, onProgress).then(gunzip),
     fetch(`/data/recent.bin.gz?n=${meta.count}`).then(r => r.arrayBuffer()).then(b => gunzip(new Uint8Array(b))),
@@ -50,7 +51,7 @@ export async function loadChain(onProgress: (f: number) => void): Promise<Chain>
   const n: number = meta.count, cap = n + EXTRA;
   const c: Chain = {
     n, cap, time: new Float64Array(cap), tx: new Uint32Array(cap), size: new Uint32Array(cap),
-    fee: new Float64Array(cap), pool: new Uint8Array(cap), pools: meta.pools, epochDifficulty: meta.epochDifficulty,
+    fee: new Float64Array(cap), pool: new Uint8Array(cap), usd: new Float32Array(cap), pools: meta.pools, epochDifficulty: meta.epochDifficulty,
   };
   const read = (buf: ArrayBuffer, from: number) => {
     const k = buf.byteLength / 13;
@@ -69,8 +70,26 @@ export async function loadChain(onProgress: (f: number) => void): Promise<Chain>
   };
   const nb = read(base, 0);
   read(recent, nb);
+  for (let h = 0; h < n; h++) c.usd[h] = priceAt(c.time[h]);
   return c;
 }
+
+/* ---------- price ---------- */
+let P: { d0: number; usd: number[] } = { d0: 0, usd: [] };
+export async function loadPrice() {
+  try {
+    const j = await (await fetch('/data/price.json', { cache: 'no-cache' })).json();
+    P = { d0: Math.floor(Date.parse(j.start + 'T00:00:00Z') / 86400e3), usd: j.usd };
+  } catch { /* price is a nice-to-have */ }
+}
+/** daily BTC/USD for a unix time (the latest known day for anything newer) */
+export function priceAt(t: number) {
+  if (!P.usd.length) return 0;
+  const i = Math.floor(t / 86400) - P.d0;
+  return P.usd[Math.max(0, Math.min(P.usd.length - 1, i))];
+}
+export function priceDays() { return P; }
+export const fmtUsd = (v: number) => (v <= 0 ? '—' : v < 1 ? `$${v.toFixed(2)}` : v < 10 ? `$${v.toFixed(2)}` : `$${fmtInt(v)}`);
 
 export function poolIndex(c: Chain, name?: string) {
   const k = poolKey(name);
@@ -85,7 +104,7 @@ export function putBlock(c: Chain, b: any) {
   const h = b.height;
   if (h >= c.cap) return false;
   c.time[h] = b.timestamp; c.tx[h] = b.tx_count; c.size[h] = b.size;
-  c.fee[h] = b.extras?.totalFees ?? 0; c.pool[h] = poolIndex(c, b.extras?.pool?.name);
+  c.fee[h] = b.extras?.totalFees ?? 0; c.pool[h] = poolIndex(c, b.extras?.pool?.name); c.usd[h] = livePrice || priceAt(b.timestamp);
   if (h >= c.n) { c.n = h + 1; return true; }
   return false;
 }
@@ -101,6 +120,11 @@ async function getJSON(url: string, tries = 3): Promise<any> {
       return ct.includes('json') ? r.json() : r.text();
     } catch (e) { if (a === tries - 1) throw e; await new Promise(s => setTimeout(s, 800 * (a + 1))); }
   }
+}
+export let livePrice = 0;
+export async function refreshPrice() {
+  try { const j = await getJSON(`${API}/v1/prices`); if (j?.USD) livePrice = j.USD; } catch { /* keep last */ }
+  return livePrice;
 }
 export const api = {
   tipHeight: async () => +(await getJSON(`${API}/blocks/tip/height`)),
@@ -160,13 +184,14 @@ export function liveFeed(on: { block: (b: any) => void; mempool: (m: Mempool) =>
 }
 
 /* ---------- metrics ---------- */
-export type Metric = 'tx' | 'fees' | 'size' | 'interval' | 'pool';
+export type Metric = 'tx' | 'fees' | 'size' | 'interval' | 'pool' | 'price';
 export const METRICS: Record<Metric, { label: string; unit: string; fmt: (v: number) => string; note: string }> = {
   tx: { label: 'Transactions', unit: 'txs', fmt: v => fmtInt(v), note: 'Transactions per block. Log scale.' },
   fees: { label: 'Fees', unit: 'BTC', fmt: v => fmtBtc(v), note: 'Total fees paid to the miner. Log scale.' },
   size: { label: 'Size', unit: 'MB', fmt: v => v.toFixed(v < 1 ? 2 : 1) + ' MB', note: 'Block size on disk. SegWit (2017) lifted the old 1 MB cap.' },
   interval: { label: 'Block time', unit: 'min', fmt: v => fmtMin(v), note: 'Minutes since the previous block. The target is 10.' },
   pool: { label: 'Miners', unit: '', fmt: () => '', note: 'Who mined each block. Height shows transactions.' },
+  price: { label: 'Price', unit: 'USD', fmt: v => fmtUsd(v), note: 'BTC price on the day the block was mined.' },
 };
 export function metricValue(c: Chain, m: Metric, h: number) {
   switch (m) {
@@ -174,6 +199,7 @@ export function metricValue(c: Chain, m: Metric, h: number) {
     case 'fees': return c.fee[h] / 1e8;
     case 'size': return c.size[h] / 1e6;
     case 'interval': return h === 0 ? 10 : Math.max(0, (c.time[h] - c.time[h - 1]) / 60);
+    case 'price': return c.usd[h];
   }
 }
 

@@ -1,35 +1,97 @@
 import './style.css';
-import { Chain, Mempool, Metric, ago, api, backfill, fmtBtc, fmtDate, fmtInt, fmtMin, liveFeed, loadChain, putBlock } from './data';
+import { Chain, Mempool, Metric, ago, backfill, fmtBtc, fmtDate, fmtInt, fmtUsd, liveFeed, livePrice, loadChain, priceDays, putBlock, refreshPrice, api } from './data';
 import { View, poolColor } from './view';
 import { Sound } from './audio';
-import { canRecord, recordClip } from './clip';
 
 const $ = <T extends HTMLElement = HTMLElement>(s: string) => document.querySelector(s) as T;
 const esc = (s: string) => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const CAPTURE = new URLSearchParams(location.search).has('capture');   // frame-exact stepping for recording demos
 const sound = new Sound();
 
-const LANDMARKS = [
-  { h: 0, name: 'Genesis block', desc: 'Satoshi mines the first block. Its coinbase carries the headline “Chancellor on brink of second bailout for banks”.' },
-  { h: 170, name: 'First payment', desc: 'Satoshi sends 10 BTC to Hal Finney, the first person-to-person transaction.' },
-  { h: 57043, name: 'Pizza Day', desc: 'Laszlo Hanyecz pays 10,000 BTC for two pizzas.' },
-  { h: 210000, name: 'First halving', desc: 'The block reward drops from 50 to 25 BTC.' },
-  { h: 420000, name: 'Second halving', desc: 'The block reward drops to 12.5 BTC.' },
-  { h: 481824, name: 'SegWit', desc: 'Segregated Witness activates, letting blocks grow past the old 1 MB limit.' },
-  { h: 630000, name: 'Third halving', desc: 'The block reward drops to 6.25 BTC.' },
-  { h: 709632, name: 'Taproot', desc: 'Taproot activates: Schnorr signatures and more flexible, more private scripts.' },
-  { h: 767430, name: 'First inscription', desc: 'The first Ordinals inscription. Data-heavy transactions start pushing blocks toward 4 MB.' },
-  { h: 840000, name: 'Fourth halving', desc: 'The reward drops to 3.125 BTC. Runes launch in the same block and fees spike.' },
+/*
+ * The big moments. On-chain events use their exact block; everything else is placed on the first
+ * block of that UTC day. Price milestones are derived from the price data at boot.
+ */
+type Kind = 'protocol' | 'market' | 'world';
+type Ev = { h: number; name: string; desc: string; kind: Kind; major?: boolean };
+const FIXED: { h?: number; date?: string; name: string; desc: string; kind: Kind; major?: boolean }[] = [
+  { h: 0, name: 'Genesis block', desc: 'Satoshi mines the first block. Its coinbase quotes a headline about bank bailouts.', kind: 'protocol', major: true },
+  { h: 170, name: 'First payment', desc: 'Satoshi sends 10 BTC to Hal Finney, the first transaction between two people.', kind: 'protocol' },
+  { h: 57043, name: 'Pizza Day', desc: 'Laszlo Hanyecz pays 10,000 BTC for two pizzas, the first real-world purchase.', kind: 'world', major: true },
+  { h: 74638, name: 'Value overflow bug', desc: 'A bug creates 184 billion BTC out of thin air. It is fixed within hours and the chain is rewritten.', kind: 'protocol' },
+  { date: '2011-06-19', name: 'Mt. Gox hacked', desc: 'The biggest exchange is hacked and the price briefly crashes to a cent.', kind: 'world' },
+  { h: 210000, name: 'First halving', desc: 'The block reward drops from 50 to 25 BTC.', kind: 'protocol', major: true },
+  { h: 225430, name: 'Accidental chain split', desc: 'A software upgrade splits the chain in two. Miners roll back to keep a single history.', kind: 'protocol' },
+  { date: '2013-10-02', name: 'Silk Road shut down', desc: 'The FBI closes the Silk Road marketplace and seizes its bitcoin.', kind: 'world' },
+  { date: '2014-02-24', name: 'Mt. Gox collapses', desc: 'Mt. Gox halts withdrawals and goes under, with roughly 850,000 BTC missing.', kind: 'world', major: true },
+  { h: 420000, name: 'Second halving', desc: 'The block reward drops to 12.5 BTC.', kind: 'protocol', major: true },
+  { h: 478558, name: 'Bitcoin Cash splits off', desc: 'A hard fork over block size creates Bitcoin Cash. This is the last block the two chains share.', kind: 'protocol' },
+  { h: 481824, name: 'SegWit activates', desc: 'Segregated Witness lets blocks grow past the old 1 MB limit.', kind: 'protocol' },
+  { date: '2020-03-12', name: 'COVID crash', desc: 'Markets panic as the pandemic spreads and bitcoin loses nearly half its value in two days.', kind: 'world' },
+  { h: 630000, name: 'Third halving', desc: 'The block reward drops to 6.25 BTC.', kind: 'protocol', major: true },
+  { date: '2020-08-11', name: 'MicroStrategy buys in', desc: 'The first public company to hold bitcoin as its main treasury reserve.', kind: 'world' },
+  { date: '2021-02-08', name: 'Tesla buys $1.5B', desc: 'Tesla reveals a $1.5 billion bitcoin purchase.', kind: 'world' },
+  { date: '2021-04-14', name: 'Coinbase goes public', desc: 'The largest US exchange lists on the Nasdaq.', kind: 'world' },
+  { date: '2021-09-07', name: 'El Salvador adopts bitcoin', desc: 'The first country to make bitcoin legal tender.', kind: 'world' },
+  { h: 709632, name: 'Taproot activates', desc: 'Schnorr signatures and more flexible, more private scripts.', kind: 'protocol' },
+  { date: '2022-05-09', name: 'Terra collapses', desc: 'The Terra/Luna stablecoin implodes and drags the whole market down.', kind: 'world' },
+  { date: '2022-11-11', name: 'FTX collapses', desc: 'Crypto exchange FTX files for bankruptcy.', kind: 'world' },
+  { h: 767430, name: 'First inscription', desc: 'The first Ordinals inscription. Data-heavy transactions start filling blocks toward 4 MB.', kind: 'protocol' },
+  { date: '2024-01-10', name: 'Spot ETFs approved', desc: 'The SEC approves US spot bitcoin ETFs, opening the door to Wall Street money.', kind: 'world', major: true },
+  { h: 840000, name: 'Fourth halving', desc: 'The reward drops to 3.125 BTC. Runes launch in the same block and fees spike.', kind: 'protocol', major: true },
+  { date: '2025-03-06', name: 'US Strategic Bitcoin Reserve', desc: 'A US executive order creates a national bitcoin reserve.', kind: 'world' },
 ];
-const landmarkAt = (h: number) => LANDMARKS.find(l => l.h === h);
+let EVENTS: Ev[] = [];
+function buildEvents() {
+  const out: Ev[] = [];
+  for (const e of FIXED) {
+    const h = e.h ?? firstBlockOn(Date.parse(e.date + 'T00:00:00Z') / 1000);
+    if (h >= 0 && h < chain.n) out.push({ h, name: e.name, desc: e.desc, kind: e.kind, major: e.major });
+  }
+  // price milestones and cycle peaks, straight from the price data
+  const P = priceDays(), dayT = (i: number) => (P.d0 + i) * 86400;
+  const firstAbove = (v: number) => P.usd.findIndex(x => x >= v);
+  for (const [v, name, desc] of [
+    [1, 'Bitcoin hits $1', 'One bitcoin is worth a dollar for the first time.'],
+    [1000, 'Bitcoin hits $1,000', 'The first time bitcoin trades above $1,000.'],
+    [10000, 'Bitcoin hits $10,000', 'The 2017 bubble pushes bitcoin past $10,000.'],
+    [100000, 'Bitcoin hits $100,000', 'Bitcoin closes above $100,000 for the first time.'],
+  ] as [number, string, string][]) {
+    const i = firstAbove(v);
+    if (i >= 0) out.push({ h: firstBlockOn(dayT(i)), name, desc, kind: 'market', major: v === 100000 });
+  }
+  const peak = (from: string, to: string) => {
+    const a = Math.floor(Date.parse(from) / 864e5) - P.d0, b = Math.min(P.usd.length - 1, Math.floor(Date.parse(to) / 864e5) - P.d0);
+    let best = a; for (let i = a; i <= b; i++) if (P.usd[i] > P.usd[best]) best = i;
+    return best;
+  };
+  if (P.usd.length) {
+    const p17 = peak('2017-06-01', '2018-06-01'), p21 = peak('2021-01-01', '2022-01-01');
+    out.push({ h: firstBlockOn(dayT(p17)), name: `2017 peak · ${fmtUsd(P.usd[p17])}`, desc: 'The 2017 bubble tops out. The price falls more than 80% over the next year.', kind: 'market' });
+    out.push({ h: firstBlockOn(dayT(p21)), name: `2021 peak · ${fmtUsd(P.usd[p21])}`, desc: 'The 2021 cycle tops out before the 2022 crypto winter.', kind: 'market' });
+    let ath = 0; P.usd.forEach((x, i) => { if (x > P.usd[ath]) ath = i; });
+    out.push({ h: firstBlockOn(dayT(ath)), name: `All-time high · ${fmtUsd(P.usd[ath])}`, desc: 'The highest daily price bitcoin has ever reached.', kind: 'market', major: true });
+  }
+  EVENTS = out.filter(e => e.h >= 0 && e.h < chain.n).sort((a, b) => a.h - b.h);
+}
+const eventAt = (h: number) => EVENTS.find(e => e.h === h);
 const subsidy = (h: number) => 50 / Math.pow(2, Math.floor(h / 210000));
-const fmtSize = (b: number) => (b >= 1e6 ? (b / 1e6).toFixed(2) + ' MB' : (b / 1e3).toFixed(1) + ' kB');
+const fmtSize = (b: number) => (b >= 1e6 ? (b / 1e6).toFixed(2) + ' MB' : (b / 1e3).toFixed(0) + ' kB');
 const poolName = (i: number) => chain.pools[i].replace(/ Pool$/i, '');
+const KIND_COLOR: Record<Kind, string> = { protocol: 'var(--teal)', market: 'var(--orange)', world: '#A78BFA' };
 
 let chain: Chain, view: View;
 let selected = -1;
 let liveState: 'on' | 'off' | 'wait' = 'wait';
 let mempool: Mempool | null = null;
+
+function firstBlockOn(t: number) {
+  let lo = 0, hi = chain.n - 1;
+  if (t > chain.time[hi]) return -1;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (chain.time[m] < t) lo = m + 1; else hi = m; }
+  return lo;
+}
 
 /* ============================== boot ============================== */
 async function boot() {
@@ -37,13 +99,13 @@ async function boot() {
   try {
     chain = await loadChain(f => { txt.textContent = `Downloading the blockchain… ${Math.round(f * 100)}%`; });
   } catch (e) { txt.textContent = 'Could not load block data. Please refresh.'; console.error(e); return; }
+  buildEvents();
   view = new View($('#gl') as HTMLCanvasElement, $('#labels'), chain);
-  view.addLandmarks(LANDMARKS.filter(l => l.h !== 170));
+  view.setEvents(EVENTS);
   view.onUserMove = () => hideHint();
   view.onTxLand = () => sound.tick();
   $('#loader').classList.add('done');
 
-  // /b/840000 share links (and older #840000 links) open straight onto a block
   const m = location.pathname.match(/^\/b\/(\d+)/);
   const deep = m ? +m[1] : parseInt(location.hash.slice(1));
   if (m) history.replaceState(null, '', `/#${deep}`);
@@ -59,15 +121,25 @@ async function boot() {
     const R = view.radius();
     view.camera.position.set(0, R * 2.6, R * 1.2); view.controls.target.set(0, 0, 0);
     view.playReveal();
-    setTimeout(() => { if (!view.fly && view.follow) view.goLive(3.4); }, 3600);
+    introAt = 3.6;
   }
-  const loop = () => { view.frame(); tickChrome(); requestAnimationFrame(loop); };
-  requestAnimationFrame(loop);
 
-  initChrome(); initColor(); initTimeline(); initPointer(); initSearch(); initFinder(); initKeys();
+  initChrome(); initColor(); initTimeline(); initPointer(); initSearch(); initKeys();
   renderLive(); renderSubtitle(); renderPending();
   setInterval(() => { renderLive(); renderPending(); }, 1000);
+  setInterval(() => refreshPrice().then(renderLive), 60000);
+  refreshPrice().then(renderLive);
   setTimeout(hideHint, 18000);
+
+  if (CAPTURE) {
+    // the recorder drives time: every call advances the whole app by exactly dt seconds
+    Object.assign(window, { __tick: tick, __app: { view, select, closeDetail, setMetric, startPlay, stopPlay, setCut, openSearch, closeSearch, chain, events: EVENTS, sound } });
+  } else {
+    let prev = performance.now();
+    // rAF timestamps can precede performance.now() at setup, so never step backwards
+    const loop = (now: number) => { tick(Math.min(.05, Math.max(0, (now - prev) / 1000))); prev = now; requestAnimationFrame(loop); };
+    requestAnimationFrame(loop);
+  }
 
   const before = chain.n;
   try {
@@ -93,11 +165,22 @@ async function boot() {
   });
 }
 
+/** one step of the whole app */
+let introAt = -1, clock = 0;
+function tick(dt: number) {
+  clock += dt;
+  if (introAt >= 0 && clock >= introAt) { introAt = -1; if (!view.fly && view.follow) view.goLive(3.4); }
+  view.frame(dt);
+  tickChrome(); tickTimeline(dt); tickHover();
+}
+
 /* ============================== chrome ============================== */
 function renderLive() {
-  const tip = chain.n - 1;
+  const tip = chain.n - 1, px = livePrice || chain.usd[tip];
   $('#live').className = 'live ' + (liveState === 'on' ? 'on' : liveState === 'off' ? 'off' : '');
-  $('#live-text').textContent = innerWidth < 600 ? `#${fmtInt(tip)}` : `${liveState === 'off' ? 'Offline' : 'Live'} · #${fmtInt(tip)} · ${ago(chain.time[tip])}`;
+  $('#live-text').textContent = innerWidth < 600
+    ? `#${fmtInt(tip)} · ${fmtUsd(px)}`
+    : `${liveState === 'off' ? 'Offline' : 'Live'} · #${fmtInt(tip)} · ${ago(chain.time[tip])} · ${fmtUsd(px)}`;
 }
 function renderSubtitle() { $('#subtitle').textContent = `${fmtInt(chain.n)} blocks linked since 3 Jan 2009`; }
 function renderPending() {
@@ -115,151 +198,43 @@ function initChrome() {
     snd.setAttribute('aria-pressed', String(on));
     snd.setAttribute('aria-label', on ? 'Turn sound off' : 'Turn sound on');
   });
-  $('#live').addEventListener('click', () => { closeAll(); stopPlay(); setCut(chain.n); view.goLive(); });
+  $('#live').addEventListener('click', () => { closeDetail(); stopPlay(); setCut(chain.n); view.goLive(); });
   $('#zoom').addEventListener('click', () => {
-    closeAll(); hideHint();
+    closeDetail(); hideHint();
     if (document.body.classList.contains('history')) { stopPlay(); setCut(chain.n); view.goLive(2.2); } else view.overview();
   });
-  document.addEventListener('click', e => { if ((e.target as HTMLElement).closest('button, .cta, .menu li')) sound.click(); });
+  document.addEventListener('click', e => { if ((e.target as HTMLElement).closest('button, .menu li')) sound.click(); });
 }
 let wasHistory = false;
 function tickChrome() {
-  const hist = view.far > .8 && !document.body.classList.contains('journey');
-  if (hist !== wasHistory) {
-    wasHistory = hist;
-    document.body.classList.toggle('history', hist);
-    $('#bar').setAttribute('aria-hidden', String(!hist));
-    if (hist) drawSpark();
-  }
+  const hist = view.far > .8;
+  if (hist === wasHistory) return;
+  wasHistory = hist;
+  document.body.classList.toggle('history', hist);
+  $('#bar').setAttribute('aria-hidden', String(!hist));
+  $('#zoom-label').textContent = hist ? 'Back to live' : 'See all history';
+  if (hist) drawSpark();
 }
-function closeAll() { if (selected >= 0) closeDetail(); $('#result').hidden = true; }
 
+let setMetric: (m: Metric) => void = () => {};
 function initColor() {
   const btn = $('#color-btn'), menu = $('#color-menu');
   const close = () => { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); };
-  const set = (mm: Metric) => {
+  setMetric = (mm: Metric) => {
     view.setMetric(mm); drawSpark();
     menu.querySelectorAll('li').forEach(li => li.setAttribute('aria-selected', String((li as HTMLElement).dataset.m === mm)));
     $('#color-label').textContent = menu.querySelector(`[data-m="${mm}"] b`)!.textContent!;
     $('#color-swatch').className = 'swatch' + (mm === 'pool' ? ' pools' : '');
   };
   btn.addEventListener('click', () => { menu.hidden = !menu.hidden; btn.setAttribute('aria-expanded', String(!menu.hidden)); });
-  menu.querySelectorAll<HTMLElement>('li').forEach(li => li.addEventListener('click', () => { set(li.dataset.m as Metric); close(); }));
+  menu.querySelectorAll<HTMLElement>('li').forEach(li => li.addEventListener('click', () => { setMetric(li.dataset.m as Metric); close(); }));
   addEventListener('pointerdown', e => { if (!(e.target as HTMLElement).closest('.color')) close(); });
   menu.querySelector('[data-m="tx"]')!.setAttribute('aria-selected', 'true');
 }
 
-/* ============================== find your block ============================== */
-const MODES = {
-  born: { q: 'What block were you <em>born</em> in?', sub: 'Every ~10 minutes since January 2009, a new block has joined the chain. Find the one from your birthday.', kicker: 'You were born in block', share: (h: string) => `I was born in Bitcoin block ${h}.` },
-  first: { q: 'Where does your <em>bitcoin</em> story start?', sub: 'Pick the day you first bought, mined or received bitcoin.', kicker: 'Your bitcoin story starts at block', share: (h: string) => `My bitcoin story starts at block ${h}.` },
-  any: { q: 'Pick <em>any</em> day in history.', sub: 'An anniversary, a wedding, the day something changed. See which block was being mined.', kicker: 'On that day the chain reached block', share: (h: string) => `This day is Bitcoin block ${h}.` },
-};
-type Mode = keyof typeof MODES;
-let mode: Mode = 'born';
-let result: { h: number; kicker: string } | null = null;
-function lowerBoundTime(t: number) {
-  let lo = 0, hi = chain.n - 1;
-  while (lo < hi) { const m = (lo + hi) >> 1; if (chain.time[m] < t) lo = m + 1; else hi = m; }
-  return lo;
-}
-function openFinder() {
-  closeAll(); hideHint();
-  $('#finder').hidden = false;
-  setTimeout(() => ($('#finder-date') as HTMLInputElement).focus(), 50);
-}
-function closeFinder() { $('#finder').hidden = true; }
-function initFinder() {
-  $('#find').addEventListener('click', openFinder);
-  $('#finder-close').addEventListener('click', closeFinder);
-  $('#finder').addEventListener('pointerdown', e => { if (e.target === $('#finder')) closeFinder(); });
-  document.querySelectorAll<HTMLButtonElement>('.modes button').forEach(b => b.addEventListener('click', () => {
-    mode = b.dataset.mode as Mode;
-    document.querySelectorAll('.modes button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
-    $('#finder-q').innerHTML = MODES[mode].q; $('#finder-sub').textContent = MODES[mode].sub;
-  }));
-  const date = $('#finder-date') as HTMLInputElement;
-  date.max = new Date().toISOString().slice(0, 10);
-  $('#finder-form').addEventListener('submit', e => {
-    e.preventDefault();
-    if (!date.value) return;
-    const t = Date.parse(date.value + 'T00:00:00Z') / 1000;
-    closeFinder();
-    let h: number, kicker = MODES[mode].kicker, sub = '';
-    if (t < chain.time[0] - 86400) {
-      h = 0; kicker = mode === 'born' ? "You're older than Bitcoin" : 'Before Bitcoin existed';
-      sub = 'The chain began on 3 January 2009 with the genesis block.';
-    } else if (t > chain.time[chain.n - 1]) {
-      h = chain.n - 1; kicker = "That day's block hasn't been mined yet"; sub = 'Here is the newest block instead.';
-    } else h = lowerBoundTime(t);
-    journey(h, kicker, sub);
-  });
-  $('#result-close').addEventListener('click', () => { $('#result').hidden = true; view.select(-1); });
-  $('#r-more').addEventListener('click', () => { if (result) { $('#result').hidden = true; select(result.h, false); } });
-  $('#r-copy').addEventListener('click', async () => {
-    if (!result) return;
-    try { await navigator.clipboard.writeText(shareUrl(result.h)); $('#r-copy').textContent = 'Copied'; } catch { $('#r-copy').textContent = shareUrl(result.h); }
-  });
-  const clipBtn = $('#r-clip') as HTMLButtonElement;
-  if (!canRecord()) clipBtn.hidden = true;
-  clipBtn.addEventListener('click', async () => {
-    if (!result) return;
-    const r = result, bar = $('#r-progress'), fill = bar.firstElementChild as HTMLElement;
-    clipBtn.disabled = true; clipBtn.textContent = 'Recording…'; bar.hidden = false;
-    $('#result').style.opacity = '.35';
-    try {
-      const { blob, ext } = await recordClip(view, sound, r.h, {
-        kicker: r.kicker, big: `#${fmtInt(r.h)}`, sub: `${fmtDate(chain.time[r.h])} · ${fmtInt(chain.tx[r.h])} transactions`, foot: location.host,
-      }, 6, f => (fill.style.width = `${f * 100}%`));
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob); a.download = `bitcoin-block-${r.h}.${ext}`; a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-      clipBtn.textContent = 'Saved';
-    } catch (err) { clipBtn.textContent = 'Recording failed'; console.error(err); }
-    clipBtn.disabled = false; bar.hidden = true; fill.style.width = '0'; $('#result').style.opacity = '';
-    setTimeout(() => (clipBtn.textContent = 'Save clip'), 2500);
-  });
-}
-const shareUrl = (h: number) => `${location.origin}/b/${h}`;
-function journey(h: number, kicker: string, sub: string) {
-  stopPlay(); if (cut >= 0) setCut(chain.n);
-  if (selected >= 0) closeDetail();
-  document.body.classList.add('journey');
-  view.select(-1);
-  const counter = $('#counter'), num = $('#counter-num');
-  counter.hidden = false;
-  const from = Math.max(0, Math.min(chain.n - 1, view.nearest(view.controls.target.x, view.controls.target.z, chain.n - 1).i));
-  const dur = view.journeyTo(h, () => arrive(h, kicker, sub));
-  sound.whoosh(dur);
-  const t0 = performance.now();
-  const roll = () => {
-    const k = Math.min(1, (performance.now() - t0) / (dur * 1000));
-    const e = k < .5 ? 4 * k ** 3 : 1 - (-2 * k + 2) ** 3 / 2;
-    num.textContent = `#${fmtInt(Math.round(from + (h - from) * e))}`;
-    if (k < 1 && !counter.hidden) requestAnimationFrame(roll);
-  };
-  roll();
-}
-function arrive(h: number, kicker: string, sub: string) {
-  $('#counter').hidden = true;
-  document.body.classList.remove('journey');
-  view.select(h); view.celebrateAt(h); sound.arrive();
-  view.showTxCloud(h);
-  history.replaceState(null, '', `#${h}`);
-  result = { h, kicker };
-  $('#r-kicker').textContent = kicker;
-  $('#r-num').innerHTML = `<small>#</small>${fmtInt(h)}`;
-  $('#r-date').textContent = sub || `Mined ${fmtDate(chain.time[h], true)}`;
-  $('#r-facts').textContent = `${fmtInt(chain.tx[h])} transactions · mined by ${poolName(chain.pool[h])} · ${fmtBtc(subsidy(h))} reward`;
-  const text = `${MODES[mode].share(`#${fmtInt(h)}`)} Find yours:`;
-  ($('#r-share') as HTMLAnchorElement).href = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(shareUrl(h))}`;
-  $('#r-copy').textContent = 'Copy link';
-  $('#result').hidden = false;
-}
-
 /* ============================== timeline ============================== */
 let cut = -1;
-let playing = false, playT = 0;
+let playing = false, playT = 0, playDur = 22;
 const hToX = (h: number) => h / Math.max(1, chain.n - 1);
 function drawSpark() {
   const cv = $('#spark') as HTMLCanvasElement, r = cv.getBoundingClientRect(), dpr = Math.min(2, devicePixelRatio);
@@ -270,11 +245,23 @@ function drawSpark() {
   for (let b = 0; b < bins; b++) {
     let s = 0, k = 0;
     for (let h = Math.floor(b * per); h < Math.min(chain.n, (b + 1) * per); h += 5) { s += view.t[h]; k++; }
-    const v = k ? s / k : 0, bw = W / bins, hgt = 3 + v * (H - 22);
-    x.fillStyle = cut >= 0 && b * per > cut ? 'rgba(247,147,26,.16)' : `rgba(247,147,26,${.35 + v * .55})`;
+    const v = k ? s / k : 0, bw = W / bins, hgt = 3 + v * (H - 24);
+    x.fillStyle = cut >= 0 && b * per > cut ? 'rgba(247,147,26,.12)' : `rgba(247,147,26,${.22 + v * .4})`;
     x.fillRect(b * bw + .5, H - 6 - hgt, Math.max(1, bw - 1.2), hgt);
   }
-  x.fillStyle = 'rgba(238,234,226,.3)'; x.font = '500 10px "Geist Mono", monospace';
+  // BTC price, log scale, as a bright line over the bars
+  let maxUsd = 1; for (let h = 0; h < chain.n; h += 7) if (chain.usd[h] > maxUsd) maxUsd = chain.usd[h];
+  const lp = (v: number) => Math.log10(Math.max(.05, v)), lo = lp(.05), hi = lp(maxUsd * 1.1);
+  x.beginPath();
+  let started = false;
+  for (let px = 0; px <= W; px += 2) {
+    const h = Math.min(chain.n - 1, Math.floor(px / W * (chain.n - 1))), v = chain.usd[h];
+    if (v <= 0) continue;
+    const y = H - 6 - (lp(v) - lo) / (hi - lo) * (H - 20);
+    started ? x.lineTo(px, y) : x.moveTo(px, y); started = true;
+  }
+  x.strokeStyle = 'rgba(255,236,210,.85)'; x.lineWidth = 1.3; x.stroke();
+  x.fillStyle = 'rgba(238,234,226,.32)'; x.font = '500 10px "Geist Mono", monospace';
   let last = 0, lastX = -1e9;
   for (let h = 0; h < chain.n; h += 2016) {
     const y = new Date(chain.time[h] * 1000).getUTCFullYear(), px = hToX(h) * W;
@@ -286,7 +273,7 @@ function drawSpark() {
 function placeCursor() {
   const h = cut < 0 ? chain.n - 1 : cut, x = hToX(h), lbl = $('#cursor-label');
   $('#cursor').style.left = `${x * 100}%`;
-  lbl.textContent = cut < 0 ? `Now · #${fmtInt(h)}` : `#${fmtInt(h)} · ${fmtDate(chain.time[h])}`;
+  lbl.textContent = cut < 0 ? `Now · ${fmtUsd(livePrice || chain.usd[h])}` : `${fmtDate(chain.time[h])} · ${fmtUsd(chain.usd[h])}`;
   lbl.style.left = x > .85 ? 'auto' : x < .1 ? '0' : '50%';
   lbl.style.right = x > .85 ? '0' : 'auto';
   lbl.style.transform = x > .85 || x < .1 ? 'none' : 'translateX(-50%)';
@@ -300,30 +287,26 @@ let sparkQueued = false;
 function drawSparkSoon() { if (sparkQueued) return; sparkQueued = true; requestAnimationFrame(() => { sparkQueued = false; drawSpark(); }); }
 function initTimeline() {
   const rail = $('#rail'), marks = $('#marks');
-  marks.innerHTML = LANDMARKS.filter(l => l.h < chain.n).map(l => `<div class="mark" data-h="${l.h}" style="left:${hToX(l.h) * 100}%"><span>${esc(l.name)}</span></div>`).join('');
+  marks.innerHTML = EVENTS.map(e => `<div class="mark ${e.kind}" data-h="${e.h}" style="left:${hToX(e.h) * 100}%"><span>${esc(e.name)}</span></div>`).join('');
   marks.querySelectorAll<HTMLElement>('.mark').forEach(m => m.addEventListener('pointerdown', e => { e.stopPropagation(); select(+m.dataset.h!); }));
   const at = (e: PointerEvent) => { const r = rail.getBoundingClientRect(); return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * (chain.n - 1); };
   let drag = false;
-  rail.addEventListener('pointerdown', e => { drag = true; rail.setPointerCapture(e.pointerId); stopPlay(); closeAll(); setCut(at(e)); });
+  rail.addEventListener('pointerdown', e => { drag = true; rail.setPointerCapture(e.pointerId); stopPlay(); closeDetail(); setCut(at(e)); });
   rail.addEventListener('pointermove', e => { if (drag) setCut(at(e)); });
   rail.addEventListener('pointerup', () => { drag = false; });
   $('#play').addEventListener('click', () => (playing ? stopPlay() : startPlay()));
   addEventListener('resize', drawSpark);
-  let prev = performance.now();
-  const tick = (now: number) => {
-    const dt = Math.min(.05, (now - prev) / 1000); prev = now;
-    if (playing) {
-      playT = Math.min(1, playT + dt / 22);
-      const e = playT < .5 ? 2 * playT * playT : 1 - (-2 * playT + 2) ** 2 / 2;
-      setCut(e * (chain.n - 1));
-      if (playT >= 1) stopPlay();
-    }
-    requestAnimationFrame(tick);
-  };
-  requestAnimationFrame(tick);
 }
-function startPlay() {
-  playing = true; playT = 0; closeAll();
+function tickTimeline(dt: number) {
+  if (!playing) return;
+  playT = Math.min(1, playT + dt / playDur);
+  const e = playT < .5 ? 2 * playT * playT : 1 - (-2 * playT + 2) ** 2 / 2;
+  setCut(e * (chain.n - 1));
+  if (playT >= 1) stopPlay();
+}
+function startPlay(dur = 22) {
+  playing = true; playT = 0; playDur = dur; closeDetail();
+  if (view.far < .8) view.overview(1.6);
   $('#play').innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 4h3.5v12H5zM11.5 4H15v12h-3.5z"/></svg>';
   $('#play').setAttribute('aria-label', 'Pause');
 }
@@ -335,123 +318,87 @@ function stopPlay() {
 }
 
 /* ============================== pointer ============================== */
+let pend: { x: number; y: number } | null = null, lastHover = -1, mouse = true;
 function initPointer() {
   const cv = $('#gl'), tip = $('#tip');
-  let down = { x: 0, y: 0 }, mouse = true, pend: { x: number; y: number } | null = null, last = -1;
+  let down = { x: 0, y: 0 };
   cv.addEventListener('pointermove', e => { if (e.pointerType === 'mouse') pend = { x: e.clientX, y: e.clientY }; });
-  cv.addEventListener('pointerleave', () => { pend = null; view.hover(-1); tip.hidden = true; last = -1; });
+  cv.addEventListener('pointerleave', () => { pend = null; view.hover(-1); tip.hidden = true; lastHover = -1; });
   cv.addEventListener('pointerdown', e => { down = { x: e.clientX, y: e.clientY }; mouse = e.pointerType === 'mouse'; if (!mouse) tip.hidden = true; });
   cv.addEventListener('pointerup', e => {
-    if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5 || document.body.classList.contains('journey')) return;
+    if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return;
     const h = view.pick(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
-    if (h >= 0) { $('#result').hidden = true; select(h); } else if (selected >= 0) closeDetail();
+    if (h >= 0) select(h); else closeDetail();
   });
-  const loop = () => {
-    if (pend && mouse && !document.body.classList.contains('journey')) {
-      const p = pend; pend = null;
-      const h = view.pick(p.x / innerWidth * 2 - 1, -(p.y / innerHeight) * 2 + 1);
-      view.hover(h);
-      if (h !== last && h >= 0) sound.hover();
-      last = h;
-      cv.style.cursor = h >= 0 ? 'pointer' : 'grab';
-      if (h >= 0) {
-        const lm = landmarkAt(h);
-        tip.hidden = false; tip.style.left = p.x + 'px'; tip.style.top = p.y + 'px';
-        tip.innerHTML = `<b>#${fmtInt(h)}</b> <span>· ${fmtDate(chain.time[h])}</span><br>${fmtInt(chain.tx[h])} transactions${lm ? ` <span>·</span> <span style="color:var(--teal)">${esc(lm.name)}</span>` : ''}`;
-      } else tip.hidden = true;
-    }
-    requestAnimationFrame(loop);
-  };
-  requestAnimationFrame(loop);
+}
+function tickHover() {
+  if (!pend || !mouse) return;
+  const p = pend; pend = null;
+  const tip = $('#tip'), cv = $('#gl');
+  const h = view.pick(p.x / innerWidth * 2 - 1, -(p.y / innerHeight) * 2 + 1);
+  view.hover(h);
+  if (h !== lastHover && h >= 0) sound.hover();
+  lastHover = h;
+  cv.style.cursor = h >= 0 ? 'pointer' : 'grab';
+  if (h < 0) { tip.hidden = true; return; }
+  const ev = eventAt(h);
+  tip.hidden = false; tip.style.left = p.x + 'px'; tip.style.top = p.y + 'px';
+  tip.innerHTML = `<b>#${fmtInt(h)}</b> <span>· ${fmtDate(chain.time[h])}</span><br>${fmtInt(chain.tx[h])} transactions <span>·</span> BTC ${fmtUsd(chain.usd[h])}${ev ? `<br><span style="color:${KIND_COLOR[ev.kind]}">${esc(ev.name)}</span>` : ''}`;
 }
 
-/* ============================== block detail ============================== */
-const cache = new Map<number, { hash: string; info: any; txids: string[] }>();
-let token = 0;
+/* ============================== block card ============================== */
+const ICON = {
+  prev: '<svg viewBox="0 0 20 20"><path d="M12 5l-5 5 5 5"/></svg>',
+  next: '<svg viewBox="0 0 20 20"><path d="M8 5l5 5-5 5"/></svg>',
+  link: '<svg viewBox="0 0 20 20"><path d="M8.5 11.5a3 3 0 0 0 4.2 0l2.5-2.5a3 3 0 0 0-4.2-4.2l-.8.8M11.5 8.5a3 3 0 0 0-4.2 0L4.8 11a3 3 0 0 0 4.2 4.2l.8-.8"/></svg>',
+  out: '<svg viewBox="0 0 20 20"><path d="M8 5H5v10h10v-3M11 4h5v5M16 4l-7 7"/></svg>',
+  check: '<svg viewBox="0 0 20 20"><path d="M5 10.5l3 3 7-7"/></svg>',
+};
+const shareUrl = (h: number) => `${location.origin}/b/${h}`;
 function select(h: number, fly = true) {
   h = Math.max(0, Math.min(chain.n - 1, h));
   selected = h; stopPlay(); hideHint();
   if (cut >= 0 && h > cut) setCut(chain.n);
   view.select(h); if (fly) view.focusBlock(h);
+  view.showTxCloud(h);
   history.replaceState(null, '', `#${h}`);
-  renderDetail(h);
+  renderCard(h);
 }
 function closeDetail() {
+  if (selected < 0) return;
   selected = -1; view.select(-1); $('#detail').hidden = true;
   history.replaceState(null, '', '/');
 }
-function renderDetail(h: number) {
-  const el = $('#detail'), my = ++token, c = chain, lm = landmarkAt(h);
-  const gap = h > 0 ? Math.max(0, (c.time[h] - c.time[h - 1]) / 60) : 0;
+function renderCard(h: number) {
+  const el = $('#detail'), c = chain, ev = eventAt(h);
   el.hidden = false;
   el.innerHTML = `
     <div class="d-head">
       <div>
-        <div class="d-kicker">Block</div>
         <div class="d-height"><small>#</small>${fmtInt(h)}</div>
         <div class="d-when">${fmtDate(c.time[h], true)} · ${ago(c.time[h])}</div>
       </div>
       <button class="x" id="d-close" aria-label="Close">×</button>
     </div>
-    ${lm ? `<div class="badge"><b>${esc(lm.name)}.</b> ${esc(lm.desc)}</div>` : ''}
-    <dl class="facts">
-      <div><dt>Transactions</dt><dd>${fmtInt(c.tx[h])}</dd></div>
-      <div><dt>Size</dt><dd>${fmtSize(c.size[h])}</dd></div>
-      <div><dt>Fees</dt><dd>${fmtBtc(c.fee[h] / 1e8)}</dd></div>
-      <div><dt>Miner reward</dt><dd>${fmtBtc(subsidy(h) + c.fee[h] / 1e8)}</dd></div>
-      <div><dt>Mined by</dt><dd><i style="background:${poolColor(c.pool[h])}"></i>${esc(poolName(c.pool[h]))}</dd></div>
-      <div><dt>After previous</dt><dd>${h > 0 ? fmtMin(gap) : '—'}</dd></div>
-    </dl>
-    <div><div class="sec-label">Fingerprint (block hash)</div><div class="hash" id="d-hash"><div class="skel" style="flex:1"></div></div></div>
-    <div>
-      <div class="sec-label">Transactions</div>
-      <p class="muted" style="margin-bottom:8px">The dots above the block are its transactions${c.tx[h] > 2500 ? ' (first 2,500)' : ''}, brighter for higher fees.</p>
-      <ul class="txs" id="d-txs"><li><div class="skel"></div></li><li><div class="skel"></div></li></ul>
+    ${ev ? `<div class="d-event"><i style="background:${KIND_COLOR[ev.kind]}"></i><div><b>${esc(ev.name)}.</b> ${esc(ev.desc)}</div></div>` : ''}
+    <div class="d-stats">
+      <div><b>${fmtInt(c.tx[h])}</b><span>Transactions</span></div>
+      <div><b>${fmtUsd(c.usd[h])}</b><span>BTC price</span></div>
+      <div><b title="${esc(poolName(c.pool[h]))}"><i style="display:inline-block;width:7px;height:7px;border-radius:2px;margin-right:6px;vertical-align:1px;background:${poolColor(c.pool[h])}"></i>${esc(poolName(c.pool[h]))}</b><span>Miner</span></div>
     </div>
-    <div class="d-nav">
-      <button class="btn" id="d-prev" ${h === 0 ? 'disabled' : ''} aria-label="Previous block">←</button>
-      <button class="btn" id="d-next" ${h >= c.n - 1 ? 'disabled' : ''} aria-label="Next block">→</button>
-      <button class="btn" id="d-share">Copy link</button>
-      <a class="btn primary" id="d-ext" href="https://mempool.space/block/${h}" target="_blank" rel="noopener">Explore ↗</a>
+    <div class="d-foot">
+      <button class="nav" id="d-prev" ${h === 0 ? 'disabled' : ''} aria-label="Previous block">${ICON.prev}</button>
+      <button class="nav" id="d-next" ${h >= c.n - 1 ? 'disabled' : ''} aria-label="Next block">${ICON.next}</button>
+      <span class="note">${fmtSize(c.size[h])} · ${fmtBtc(subsidy(h) + c.fee[h] / 1e8)} to miner</span>
+      <button class="nav" id="d-copy" aria-label="Copy link to this block">${ICON.link}</button>
+      <a class="nav" href="https://mempool.space/block/${h}" target="_blank" rel="noopener" aria-label="Open in mempool.space">${ICON.out}</a>
     </div>`;
   $('#d-close').onclick = closeDetail;
   $('#d-prev').onclick = () => select(h - 1);
   $('#d-next').onclick = () => select(h + 1);
-  $('#d-share').onclick = async () => {
-    try { await navigator.clipboard.writeText(shareUrl(h)); $('#d-share').textContent = 'Copied'; } catch { $('#d-share').textContent = shareUrl(h); }
+  $('#d-copy').onclick = async () => {
+    try { await navigator.clipboard.writeText(shareUrl(h)); $('#d-copy').innerHTML = ICON.check; setTimeout(() => ($('#d-copy') && ($('#d-copy').innerHTML = ICON.link)), 1500); } catch { toast(shareUrl(h)); }
   };
-  view.showTxCloud(h);
-  loadDetail(h).then(d => {
-    if (my !== token) return;
-    const z = d.hash.match(/^0*/)![0].length;
-    $('#d-hash').innerHTML = `<code><span class="z">${d.hash.slice(0, z)}</span>${d.hash.slice(z)}</code><button class="copy" id="d-copy">Copy</button>`;
-    $('#d-copy').onclick = () => navigator.clipboard.writeText(d.hash).then(() => ($('#d-copy').textContent = 'Copied'));
-    ($('#d-ext') as HTMLAnchorElement).href = `https://mempool.space/block/${d.hash}`;
-    view.showTxCloud(h, d.info?.extras?.feeRange);
-    const txs = d.txids;
-    $('#d-txs').innerHTML = txs.slice(0, 5).map((t, i) => `<li><a href="https://mempool.space/tx/${t}" target="_blank" rel="noopener"><span>${t.slice(0, 10)}…${t.slice(-8)}</span><span>${i === 0 ? 'new coins' : '#' + i}</span></a></li>`).join('') +
-      (txs.length > 5 ? `<li><a href="https://mempool.space/block/${d.hash}" target="_blank" rel="noopener"><span>+ ${fmtInt(txs.length - 5)} more</span><span>↗</span></a></li>` : '');
-  }).catch(() => {
-    if (my !== token) return;
-    $('#d-hash').innerHTML = '<span class="muted">Live details are unavailable right now.</span>';
-    $('#d-txs').innerHTML = '';
-  });
-}
-async function loadDetail(h: number) {
-  if (cache.has(h)) return cache.get(h)!;
-  const hash = (await api.hashAt(h)).trim();
-  const [info, txids] = await Promise.all([api.block(hash).catch(() => null), api.txids(hash).catch(() => [] as string[])]);
-  const d = { hash, info, txids };
-  cache.set(h, d);
-  return d;
-}
-const argmaxCache: Record<string, [number, number]> = {};
-function argmax(name: 'tx' | 'fee') {
-  const a = chain[name], k = argmaxCache[name];
-  if (k && k[0] === chain.n) return k[1];
-  let i = 0; for (let h = 1; h < chain.n; h++) if (a[h] > a[i]) i = h;
-  argmaxCache[name] = [chain.n, i];
-  return i;
 }
 
 /* ============================== search ============================== */
@@ -461,9 +408,7 @@ function suggestions(q: string): Sugg[] {
   const out: Sugg[] = [];
   if (!q) {
     out.push({ title: 'Latest block', meta: `#${fmtInt(chain.n - 1)}`, go: () => select(chain.n - 1) });
-    LANDMARKS.forEach(l => out.push({ title: l.name, meta: `#${fmtInt(l.h)}`, note: l.desc, go: () => select(l.h) }));
-    out.push({ title: 'Most transactions ever', meta: `#${fmtInt(argmax('tx'))}`, go: () => select(argmax('tx')) });
-    out.push({ title: 'Highest fees ever', meta: `#${fmtInt(argmax('fee'))}`, go: () => select(argmax('fee')) });
+    EVENTS.filter(e => e.major).forEach(e => out.push({ title: e.name, meta: fmtDate(chain.time[e.h]), note: e.desc, go: () => select(e.h) }));
     return out;
   }
   const num = q.replace(/[#,\s]/g, '');
@@ -482,16 +427,16 @@ function suggestions(q: string): Sugg[] {
       },
     });
   }
-  if (!/^\d+$/.test(num) || num.length === 4) {
-    const t = Date.parse(/^\d{4}$/.test(q) ? `${q}-01-01T00:00:00Z` : /^\d{4}-\d{2}(-\d{2})?$/.test(q) ? q + (q.length === 7 ? '-01' : '') + 'T00:00:00Z' : q + ' UTC');
-    if (!isNaN(t) && t / 1000 >= chain.time[0] - 86400 && t / 1000 <= chain.time[chain.n - 1]) {
-      const h = lowerBoundTime(t / 1000);
-      out.push({ title: `First block on ${fmtDate(t / 1000)}`, meta: `#${fmtInt(h)}`, go: () => select(h) });
-    }
-  }
   const lq = q.toLowerCase();
-  LANDMARKS.filter(l => (l.name + ' ' + l.desc).toLowerCase().includes(lq)).forEach(l => out.push({ title: l.name, meta: `#${fmtInt(l.h)}`, note: l.desc, go: () => select(l.h) }));
-  if (!out.length) out.push({ title: 'Try a block number, a date like 2017-12-17, or a transaction ID', go: () => {} });
+  EVENTS.filter(e => (e.name + ' ' + e.desc).toLowerCase().includes(lq)).forEach(e => out.push({ title: e.name, meta: fmtDate(chain.time[e.h]), note: e.desc, go: () => select(e.h) }));
+  // dates: 2017, 2017-12, 2017-12-17, "17 Dec 2017", "Dec 17, 2017"
+  const iso = /^\d{4}(-\d{2}){0,2}$/.test(q), words = /^(\d{1,2} [a-z]{3,9},? \d{4}|[a-z]{3,9} \d{1,2},? \d{4}|[a-z]{3,9} \d{4})$/i.test(q);
+  if (iso || words) {
+    const t = Date.parse(iso ? (q.length === 4 ? `${q}-01-01` : q.length === 7 ? `${q}-01` : q) + 'T00:00:00Z' : q + ' UTC');
+    const h = isNaN(t) ? -1 : firstBlockOn(t / 1000);
+    if (h >= 0) out.push({ title: `First block on ${fmtDate(t / 1000)}`, meta: `#${fmtInt(h)}`, go: () => select(h) });
+  }
+  if (!out.length) out.push({ title: 'Try a block number, a date, an event like "halving", or a transaction ID', go: () => {} });
   return out;
 }
 let current: Sugg[] = [], active = 0;
@@ -501,11 +446,10 @@ function setSuggest(list: Sugg[], msg = false) {
   ul.innerHTML = list.map((s, i) => `<li role="option" data-i="${i}" aria-selected="${i === 0 && !msg}" class="${msg ? 'msg' : ''}"><b>${esc(s.title)}</b><span>${esc(s.meta || '')}</span>${s.note ? `<small>${esc(s.note)}</small>` : ''}</li>`).join('');
   ul.querySelectorAll('li').forEach(li => li.addEventListener('mousedown', e => { e.preventDefault(); run(+(li as HTMLElement).dataset.i!); }));
 }
-function openSearch() { $('#search').classList.add('open'); ($('#q') as HTMLInputElement).focus(); }
+function openSearch(q = '') { $('#search').classList.add('open'); const i = $('#q') as HTMLInputElement; i.value = q; i.focus(); setSuggest(suggestions(q)); }
 function closeSearch() { $('#suggest').hidden = true; $('#search').classList.remove('open'); ($('#q') as HTMLInputElement).value = ''; ($('#q') as HTMLInputElement).blur(); }
 function run(i: number) {
   const s = current[i]; if (!s) return;
-  closeAll();
   if (!(s.go() instanceof Promise)) closeSearch();
 }
 function initSearch() {
@@ -528,13 +472,12 @@ function initSearch() {
 /* ============================== keys & toast ============================== */
 function initKeys() {
   addEventListener('keydown', e => {
-    if ((e.target as HTMLElement).tagName === 'INPUT') { if (e.key === 'Escape') closeFinder(); return; }
+    if ((e.target as HTMLElement).tagName === 'INPUT') return;
     if (e.key === '/') { e.preventDefault(); openSearch(); }
-    if (e.key === 'Escape') { closeFinder(); closeAll(); }
-    if (e.key.toLowerCase() === 'f' && $('#finder').hidden) { e.preventDefault(); openFinder(); }
+    if (e.key === 'Escape') closeDetail();
     if (e.key === 'ArrowLeft' && selected > 0) select(selected - 1);
     if (e.key === 'ArrowRight' && selected >= 0 && selected < chain.n - 1) select(selected + 1);
-    if (e.key.toLowerCase() === 'l') { closeAll(); view.goLive(); }
+    if (e.key.toLowerCase() === 'l') { closeDetail(); view.goLive(); }
   });
 }
 let toastTimer = 0;

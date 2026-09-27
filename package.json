@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "data:fetch": "node scripts/fetch-dumps.mjs",
     "data:build": "node scripts/build-data.mjs",
-    "data:update": "node scripts/build-data.mjs --update"
+    "data:update": "node scripts/build-data.mjs --update && node scripts/build-price.mjs",
+    "data:price": "node scripts/build-price.mjs"
   },
   "dependencies": {
     "@vercel/og": "^1.0.3",

@@ -4,9 +4,9 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>The Chain · every Bitcoin block, live</title>
-  <meta name="description" content="Every Bitcoin block ever mined, linked in one chain and growing live. Find the block you were born in." />
-  <meta property="og:title" content="The Chain · find your Bitcoin block" />
-  <meta property="og:description" content="Every Bitcoin block ever mined, linked in one chain and growing live. Find the block you were born in." />
+  <meta name="description" content="Every Bitcoin block ever mined, linked in one chain and growing live, with the price and every big moment in Bitcoin history." />
+  <meta property="og:title" content="The Chain · every Bitcoin block, live" />
+  <meta property="og:description" content="Every Bitcoin block ever mined, linked in one chain and growing live, with the price and every big moment in Bitcoin history." />
   <meta property="og:image" content="/api/og" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="theme-color" content="#04050A" />
@@ -40,9 +40,7 @@
   <section class="detail" id="detail" hidden aria-live="polite"></section>
 
   <div class="dock chrome">
-    <button class="ghost" id="zoom" type="button">All history</button>
-    <button class="cta" id="find" type="button"><span class="spark">✦</span> Find your block</button>
-    <span class="ghost spacer" aria-hidden="true"></span>
+    <button class="pill" id="zoom" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 8V4h4M16 8V4h-4M4 12v4h4M16 12v4h-4" /></svg><span id="zoom-label">See all history</span></button>
   </div>
 
   <footer class="bar chrome" id="bar" aria-hidden="true">
@@ -60,44 +58,11 @@
         <li role="option" data-m="tx"><b>Transactions</b><span>Bigger, brighter blocks hold more transactions</span></li>
         <li role="option" data-m="fees"><b>Fees</b><span>Total fees paid to the miner</span></li>
         <li role="option" data-m="size"><b>Size</b><span>Megabytes of data in the block</span></li>
+        <li role="option" data-m="price"><b>Price</b><span>BTC price on the day each block was mined</span></li>
         <li role="option" data-m="pool"><b>Miners</b><span>Coloured by who mined each block</span></li>
       </ul>
     </div>
   </footer>
-
-  <div class="finder" id="finder" hidden role="dialog" aria-modal="true" aria-labelledby="finder-q">
-    <form class="finder-card" id="finder-form">
-      <button class="x" type="button" id="finder-close" aria-label="Close">×</button>
-      <div class="modes" role="group" aria-label="What are you looking for?">
-        <button type="button" data-mode="born" aria-pressed="true">Birthday</button>
-        <button type="button" data-mode="first" aria-pressed="false">First bitcoin</button>
-        <button type="button" data-mode="any" aria-pressed="false">Any day</button>
-      </div>
-      <h2 id="finder-q">What block were you <em>born</em> in?</h2>
-      <p class="finder-sub" id="finder-sub">Every ~10 minutes since January 2009, a new block has joined the chain. Find the one from your day.</p>
-      <div class="date-row">
-        <input type="date" id="finder-date" required min="1900-01-01" aria-label="Date" />
-        <button class="cta" type="submit">Find it</button>
-      </div>
-    </form>
-  </div>
-
-  <div class="counter" id="counter" hidden aria-hidden="true"><span id="counter-kicker">Travelling back through the chain</span><b id="counter-num"></b></div>
-
-  <section class="result" id="result" hidden aria-live="polite">
-    <button class="x" type="button" id="result-close" aria-label="Close">×</button>
-    <div class="r-kicker" id="r-kicker"></div>
-    <div class="r-num" id="r-num"></div>
-    <div class="r-date" id="r-date"></div>
-    <div class="r-facts" id="r-facts"></div>
-    <div class="r-actions">
-      <a class="cta" id="r-share" target="_blank" rel="noopener">Share on X</a>
-      <button class="btn" type="button" id="r-clip">Save clip</button>
-      <button class="btn" type="button" id="r-copy">Copy link</button>
-      <button class="btn" type="button" id="r-more">Details</button>
-    </div>
-    <div class="r-progress" id="r-progress" hidden><i></i></div>
-  </section>
 
   <p class="hint" id="hint">Each cube is a block of transactions, linked to the one before it. <b>Scroll out</b> to see the whole chain.</p>
   <div class="tip" id="tip" hidden></div>

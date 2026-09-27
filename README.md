@@ -2,16 +2,19 @@
 
 Every Bitcoin block ever mined, linked in one continuous chain in 3D, growing live.
 
-- **Find your block**: pick your birthday (or the day you got your first bitcoin, or any day),
-  fly back through the chain to the block mined that day, then share it on X, copy a link,
-  or save a 6-second square video clip.
 - **Live**: the translucent *next block* fills with waiting transactions from the mempool and
   crystallises onto the chain when a miner finds it, sending a shockwave down the chain.
-- **Sound** (off by default): an ambient pad, a glassy tick for each incoming transaction,
-  a boom and bell chord for each new block, a whoosh for long flights.
+- **Click any block**: a compact card with its transactions, the BTC price that day, the miner,
+  and any event that happened there. Arrow keys step along the chain.
+- **Price**: every block carries the BTC/USD price of its day. It shows in the card, the live pill,
+  the timeline (as a line over the activity bars) and as a colour mode.
+- **32 events**: halvings, protocol upgrades, forks, bugs, exchange collapses, ETFs, El Salvador,
+  price milestones and cycle peaks, marked with beams on the chain and ticks on the timeline.
+  Edit the list in `src/main.ts` (`FIXED`); price milestones are computed from the price data.
 - **All history**: zoom out and the chain is one coil, 2009 at the centre and today at the edge,
-  with a timeline, replay, and colouring by transactions, fees, size or miner.
-- **Search**: block number, date (`2017-12-17`), block hash or transaction ID.
+  with a timeline, replay, and colouring by transactions, fees, size, price or miner.
+- **Search**: block number, date, event name, block hash or transaction ID.
+- **Sound** (off by default): ambient pad, a tick per incoming transaction, a boom and bells per block.
 - **Share links**: `/b/840000` opens that block and gives X/iMessage a preview image
   (`api/share.ts` + `api/og.ts`, Vercel edge functions).
 
@@ -33,12 +36,13 @@ fees, pool), about 13 bytes per block:
 | `public/data/base.bin.gz` | the full history at the last full build |
 | `public/data/recent.bin.gz` | blocks since then (small, refreshed weekly) |
 | `public/data/meta.json` | counts, pool names, difficulty per ring |
+| `public/data/price.json` | daily BTC/USD since 2009 (blockchain.info) |
 
 On load the page fetches any blocks newer than the snapshot from mempool.space
 (up to ~4,000), then subscribes to its websocket for new blocks.
 
 ```bash
-npm run data:update   # append new blocks from mempool.space (what the weekly GitHub Action runs)
+npm run data:update   # append new blocks + refresh prices (what the weekly GitHub Action runs)
 npm run data:fetch    # download Blockchair's daily block dumps into data-cache/ (slow; resumable)
 npm run data:build    # full rebuild of base + recent from data-cache/
 ```
@@ -53,3 +57,9 @@ mined by anonymous individuals.
 Push to GitHub and import the repo in Vercel (framework preset: Vite). `vercel.json`
 sets the build command and cache headers. The workflow in `.github/workflows/refresh-data.yml`
 commits new blocks every Monday, which triggers a redeploy.
+
+## Demo capture
+
+`/?capture` turns off the real-time loop and exposes `window.__tick(dt)`, so a recorder can step
+the app one video frame at a time. `../video/scripts/capture-demo.mjs` uses this to record the
+product demo (needs `npm run dev` running and `npm i playwright-core` in `../video`).

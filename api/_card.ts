@@ -31,7 +31,7 @@ export async function card(h: number | null) {
       el('div', { color: '#F7931A', fontSize: 24, letterSpacing: 4 }, h === null ? 'EVERY BITCOIN BLOCK · LIVE' : 'BITCOIN BLOCK')),
     el('div', { alignItems: 'center', justifyContent: 'center' }, ...cubes),
     el('div', { flexDirection: 'column' },
-      el('div', { fontSize: h === null ? 76 : 110, fontWeight: 700, letterSpacing: -3, lineHeight: 1 }, h === null ? 'Find your block' : `#${fmt(h)}`),
+      el('div', { fontSize: h === null ? 76 : 110, fontWeight: 700, letterSpacing: -3, lineHeight: 1 }, h === null ? 'Every Bitcoin block' : `#${fmt(h)}`),
       el('div', { fontSize: 34, color: 'rgba(238,234,226,.7)', marginTop: 14 },
         h === null ? 'Every Bitcoin block ever mined, linked in one chain.' : [when, txs, miner].filter(Boolean).join(' · ') || 'Every Bitcoin block ever mined, linked in one chain.')),
   );
