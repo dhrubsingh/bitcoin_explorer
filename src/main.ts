@@ -214,10 +214,22 @@ function initFullscreen() {
 function initChrome() {
   initFullscreen();
   const snd = $('#sound');
+  let wantSound = true;
+  try { wantSound = localStorage.getItem('sound') !== 'off'; } catch { /* storage blocked */ }
+  const show = (on: boolean) => { snd.setAttribute('aria-pressed', String(on)); snd.setAttribute('aria-label', on ? 'Turn sound off' : 'Turn sound on'); };
+  show(wantSound);
+  if (wantSound && !CAPTURE) {
+    const unlock = (e: Event) => {
+      if ((e.target as HTMLElement).closest?.('#sound')) return;          // the toggle handles itself
+      removeEventListener('pointerdown', unlock, true); removeEventListener('keydown', unlock, true);
+      if (!sound.on && snd.getAttribute('aria-pressed') === 'true') sound.start();
+    };
+    addEventListener('pointerdown', unlock, true); addEventListener('keydown', unlock, true);
+  }
   snd.addEventListener('click', () => {
-    const on = sound.on ? (sound.stop(), false) : sound.start();
-    snd.setAttribute('aria-pressed', String(on));
-    snd.setAttribute('aria-label', on ? 'Turn sound off' : 'Turn sound on');
+    const on = snd.getAttribute('aria-pressed') === 'true' ? (sound.stop(), false) : sound.start();
+    show(on);
+    try { localStorage.setItem('sound', on ? 'on' : 'off'); } catch { /* storage blocked */ }
   });
   $('#live').addEventListener('click', () => { closeDetail(); stopPlay(); setCut(chain.n); view.goLive(); });
   $('#zoom').addEventListener('click', () => {
@@ -378,9 +390,12 @@ const ICON = {
 const shareUrl = (h: number) => `${location.origin}/b/${h}`;
 function select(h: number, fly = true) {
   h = Math.max(0, Math.min(chain.n - 1, h));
-  selected = h; stopPlay(); hideHint();
+  stopPlay(); hideHint();
   if (cut >= 0 && h > cut) setCut(chain.n);
-  view.select(h); if (fly) view.focusBlock(h);
+  const prev = selected;
+  selected = h;
+  view.select(h);
+  if (fly) { if (prev >= 0 && prev !== h && Math.abs(h - prev) <= 3 && view.far < .3) view.stepTo(h); else view.focusBlock(h); }
   view.showTxCloud(h);
   history.replaceState(null, '', `#${h}`);
   renderCard(h);

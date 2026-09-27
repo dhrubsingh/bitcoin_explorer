@@ -195,7 +195,8 @@ const GLOW = glowTexture();
 const hexRGB = (hex: string): [number, number, number] => { const n = parseInt(hex.slice(1), 16); return [(n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255]; };
 const ease = (t: number) => (t < .5 ? 4 * t ** 3 : 1 - (-2 * t + 2) ** 3 / 2);
 
-type Fly = { from: THREE.Vector3; to: THREE.Vector3; tFrom: THREE.Vector3; tTo: THREE.Vector3; t: number; dur: number; lift: number; done?: () => void };
+type Fly = { from: THREE.Vector3; to: THREE.Vector3; tFrom: THREE.Vector3; tTo: THREE.Vector3; t: number; dur: number; lift: number; done?: () => void; snappy?: boolean };
+const easeOut = (t: number) => 1 - (1 - t) ** 3;
 
 export class View {
   renderer: THREE.WebGLRenderer;
@@ -486,6 +487,15 @@ export class View {
     const R = this.radius();
     this.flyTo(new THREE.Vector3(0, R * 2.3, R * 1.3), new THREE.Vector3(0, 0, 0), dur);
   }
+  /** stepping to a neighbouring block: slide the current view along the chain, keeping the camera angle */
+  stepTo(h: number) {
+    this.follow = false;
+    const c = this.centerOf(h), to = new THREE.Vector3(c.x, c.y + .5, c.z);
+    const delta = to.clone().sub(this.fly ? this.fly.tTo : this.controls.target);
+    const camTo = (this.fly ? this.fly.to : this.camera.position).clone().add(delta);
+    this.flyTo(camTo, to, .32);
+    this.fly!.snappy = true;
+  }
   focusBlock(h: number, dur?: number) {
     this.follow = false; const { cam, target } = this.blockFrame(h);
     // long hops arc up over the coil instead of cutting through other blocks
@@ -567,10 +577,10 @@ export class View {
     this.idle += dt;
     if (this.fly) {
       const f = this.fly; f.t = Math.min(1, f.t + dt / f.dur);
-      const e = ease(f.t);
+      const e = f.snappy ? easeOut(f.t) : ease(f.t);
       this.camera.position.lerpVectors(f.from, f.to, e);
       this.camera.position.y += Math.sin(Math.PI * e) * f.lift;
-      this.controls.target.lerpVectors(f.tFrom, f.tTo, ease(Math.min(1, f.t * 1.08)));
+      this.controls.target.lerpVectors(f.tFrom, f.tTo, f.snappy ? e : ease(Math.min(1, f.t * 1.08)));
       if (f.t >= 1) {
         this.fly = null; this.idle = 0;
         this.drift = { pos: this.camera.position.clone(), target: this.controls.target.clone() };
