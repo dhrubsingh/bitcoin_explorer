@@ -61,5 +61,5 @@ commits new blocks every Monday, which triggers a redeploy.
 ## Demo capture
 
 `/?capture` turns off the real-time loop and exposes `window.__tick(dt)`, so a recorder can step
-the app one video frame at a time. `../video/scripts/capture-demo.mjs` uses this to record the
-product demo (needs `npm run dev` running and `npm i playwright-core` in `../video`).
+the app one video frame at a time. `../video/scripts/capture-walkthrough.mjs` uses this to record the
+product walkthrough (needs `npm run dev` running and `npm i playwright-core` in `../video`).

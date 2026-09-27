@@ -1,6 +1,6 @@
 import './style.css';
 import { Chain, Mempool, Metric, ago, backfill, fmtBtc, fmtDate, fmtInt, fmtUsd, liveFeed, livePrice, loadChain, priceDays, putBlock, refreshPrice, api } from './data';
-import { View, poolColor } from './view';
+import { View, blockPos, poolColor } from './view';
 import { Sound } from './audio';
 
 const $ = <T extends HTMLElement = HTMLElement>(s: string) => document.querySelector(s) as T;
@@ -133,7 +133,7 @@ async function boot() {
 
   if (CAPTURE) {
     // the recorder drives time: every call advances the whole app by exactly dt seconds
-    Object.assign(window, { __tick: tick, __app: { view, select, closeDetail, setMetric, startPlay, stopPlay, setCut, openSearch, closeSearch, chain, events: EVENTS, sound } });
+    Object.assign(window, { __tick: tick, __app: { view, blockPos, select, closeDetail, setMetric, startPlay, stopPlay, setCut, openSearch, closeSearch, chain, events: EVENTS, sound } });
   } else {
     let prev = performance.now();
     // rAF timestamps can precede performance.now() at setup, so never step backwards
