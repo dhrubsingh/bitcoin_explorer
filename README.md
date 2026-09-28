@@ -52,14 +52,20 @@ and the [mempool.space API](https://mempool.space/docs/api) for recent and live 
 Pool attribution for early blocks is mostly "Unknown": before pools existed, blocks were
 mined by anonymous individuals.
 
-## Deploy
+## Deploy (Vercel)
 
-Push to GitHub and import the repo in Vercel (framework preset: Vite). `vercel.json`
-sets the build command and cache headers. The workflow in `.github/workflows/refresh-data.yml`
-commits new blocks every Monday, which triggers a redeploy.
+1. In Vercel, **Add New → Project** and import `dhrubsingh/bitcoin_explorer`.
+2. Leave the defaults: Vercel detects Vite, and `vercel.json` sets the build command (`npm run build`),
+   the output folder (`dist`), the `/b/:height` share-link rewrite and cache headers.
+   `api/og.ts` and `api/share.ts` deploy automatically as edge functions for link previews.
+3. Deploy. No environment variables are needed.
+
+To keep the block data fresh without redeploying by hand, enable the weekly GitHub Action:
+in the GitHub repo go to **Settings → Actions → General → Workflow permissions** and choose
+**Read and write permissions**. It commits new blocks and prices every Monday, and each commit
+triggers a Vercel redeploy. Between runs the site fills in newer blocks live from mempool.space.
 
 ## Demo capture
 
 `/?capture` turns off the real-time loop and exposes `window.__tick(dt)`, so a recorder can step
-the app one video frame at a time. `../video/scripts/capture-walkthrough.mjs` uses this to record the
-product walkthrough (needs `npm run dev` running and `npm i playwright-core` in `../video`).
+the app one video frame at a time. a Playwright script (kept outside this repo) uses this to record demo videos (needs `npm run dev` running and `npm i playwright-core` in `../video`).
