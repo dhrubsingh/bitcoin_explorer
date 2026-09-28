@@ -125,7 +125,7 @@ async function boot() {
   }
 
   initChrome(); initColor(); initTimeline(); initPointer(); initSearch(); initKeys();
-  renderLive(); renderSubtitle(); renderPending();
+  renderLive(); renderSubtitle(); renderPending(); touchHint();
   setInterval(() => { renderLive(); renderPending(); }, 1000);
   setInterval(() => refreshPrice().then(renderLive), 60000);
   refreshPrice().then(renderLive);
@@ -187,6 +187,10 @@ function renderLive() {
     ? `#${fmtInt(tip)} · ${fmtUsd(px)}`
     : `${liveState === 'off' ? 'Offline' : 'Live'} · #${fmtInt(tip)} · ${ago(chain.time[tip])} · ${fmtUsd(px)}`;
 }
+function touchHint() {
+  if (matchMedia('(pointer: coarse)').matches)
+    $('#hint').innerHTML = 'Each cube is a block of transactions, linked to the one before it. <b>Pinch out</b> to see the whole chain, <b>tap</b> a block to open it.';
+}
 function renderSubtitle() { $('#subtitle').textContent = `${fmtInt(chain.n)} blocks linked since 3 Jan 2009`; }
 function renderPending() {
   const since = Math.max(0, Date.now() / 1000 - chain.time[chain.n - 1]) / 60;
@@ -226,10 +230,12 @@ function initChrome() {
   if (wantSound && !CAPTURE) {
     const unlock = (e: Event) => {
       if ((e.target as HTMLElement).closest?.('#sound')) return;          // the toggle handles itself
-      removeEventListener('pointerdown', unlock, true); removeEventListener('keydown', unlock, true);
-      if (!sound.on && snd.getAttribute('aria-pressed') === 'true') sound.start();
+      if (snd.getAttribute('aria-pressed') !== 'true') return;
+      if (!sound.on) sound.start(); else (sound.ctx as AudioContext | null)?.resume();
+      if ((sound.ctx as AudioContext | null)?.state === 'running') for (const t of UNLOCK) removeEventListener(t, unlock, true);
     };
-    addEventListener('pointerdown', unlock, true); addEventListener('keydown', unlock, true);
+    const UNLOCK = ['pointerdown', 'touchend', 'click', 'keydown'];
+    for (const t of UNLOCK) addEventListener(t, unlock, true);
   }
   snd.addEventListener('click', () => {
     const on = snd.getAttribute('aria-pressed') === 'true' ? (sound.stop(), false) : sound.start();
@@ -364,8 +370,9 @@ function initPointer() {
   cv.addEventListener('pointerleave', () => { pend = null; view.hover(-1); tip.hidden = true; lastHover = -1; });
   cv.addEventListener('pointerdown', e => { down = { x: e.clientX, y: e.clientY }; mouse = e.pointerType === 'mouse'; if (!mouse) tip.hidden = true; });
   cv.addEventListener('pointerup', e => {
-    if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return;
-    const h = view.pick(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+    const isTouch = e.pointerType !== 'mouse';
+    if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > (isTouch ? 12 : 5)) return;
+    const h = view.pick(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1, isTouch);
     if (h >= 0) select(h); else closeDetail();
   });
 }
@@ -421,9 +428,48 @@ function select(h: number, fly = true, stepping = false) {
   if (clock - lastHash > .3) { lastHash = clock; history.replaceState(null, '', `#${h}`); }   // browsers rate-limit URL updates
   renderCard(h);
 }
+/* holding a step button repeats it; repeats are quick enough to build momentum */
+let holdTimer = 0, holdRaf = 0;
+function startHold(dir: 1 | -1) {
+  stopHold();
+  step(dir);
+  holdTimer = window.setTimeout(() => {
+    let last = performance.now();
+    const loop = (now: number) => {
+      if (selected < 0) return stopHold();
+      if (now - last > 33) { last = now; step(dir); }
+      holdRaf = requestAnimationFrame(loop);
+    };
+    holdRaf = requestAnimationFrame(loop);
+  }, 320);
+}
+function stopHold() { clearTimeout(holdTimer); cancelAnimationFrame(holdRaf); holdTimer = holdRaf = 0; }
+addEventListener('pointerup', stopHold); addEventListener('pointercancel', stopHold); addEventListener('blur', stopHold);
+
+/* on phones the card is a bottom sheet: shift the view up so the block sits in the space above it */
+function placeSheet() {
+  const el = $('#detail');
+  if (el.hidden || innerWidth > 860) return view.setBottomSheet(0);
+  const top = el.getBoundingClientRect().top, header = 64;
+  view.setBottomSheet(Math.max(0, innerHeight / 2 - (header + top) / 2));
+}
+addEventListener('resize', () => { if (selected >= 0) placeSheet(); });
+/* swipe the card sideways to step: right = older (like turning back a page), left = newer */
+{
+  let sx = 0, sy = 0, st = 0, on = false;
+  const card = document.getElementById('detail')!;
+  card.addEventListener('pointerdown', e => { if (e.pointerType === 'mouse' || (e.target as HTMLElement).closest('button, a')) return; on = true; sx = e.clientX; sy = e.clientY; st = performance.now(); });
+  card.addEventListener('pointerup', e => {
+    if (!on) return; on = false;
+    const dx = e.clientX - sx, dy = e.clientY - sy;
+    if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.5 && performance.now() - st < 600 && selected >= 0) step(dx > 0 ? -1 : 1);
+  });
+  card.addEventListener('pointercancel', () => { on = false; });
+}
+
 function closeDetail() {
   if (selected < 0) return;
-  selected = -1; view.select(-1); $('#detail').hidden = true;
+  selected = -1; view.select(-1); $('#detail').hidden = true; view.setBottomSheet(0); stopHold();
   history.replaceState(null, '', '/');
 }
 function renderCard(h: number) {
@@ -451,8 +497,12 @@ function renderCard(h: number) {
       <a class="nav" href="https://mempool.space/block/${h}" target="_blank" rel="noopener" aria-label="Open in mempool.space">${ICON.out}</a>
     </div>`;
   $('#d-close').onclick = closeDetail;
-  $('#d-prev').onclick = () => step(-1);
-  $('#d-next').onclick = () => step(1);
+  for (const [id, dir] of [['#d-prev', -1], ['#d-next', 1]] as const) {
+    const b = $(id);
+    b.onpointerdown = e => { e.preventDefault(); startHold(dir); };
+    b.onclick = e => { if (e.detail === 0) step(dir); };           // keyboard activation
+  }
+  placeSheet();
   $('#d-copy').onclick = async () => {
     try { await navigator.clipboard.writeText(shareUrl(h)); $('#d-copy').innerHTML = ICON.check; setTimeout(() => ($('#d-copy') && ($('#d-copy').innerHTML = ICON.link)), 1500); } catch { toast(shareUrl(h)); }
   };

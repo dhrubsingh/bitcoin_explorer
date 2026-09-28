@@ -239,9 +239,18 @@ export class View {
   onAfterRender: (() => void) | null = null;
   shotting = false;
 
+  touch = false;
+  pr = 1;
+  frameMs = 16; lastQuality = 0;
+  /** screen-space shift so a block stays visible above a bottom sheet (phones) */
+  offY = 0; offTarget = 0;
+  setBottomSheet(px: number) { this.offTarget = px; }
+
   constructor(canvas: HTMLCanvasElement, labelsEl: HTMLElement, public chain: Chain) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+    this.touch = matchMedia('(pointer: coarse)').matches;
+    this.pr = Math.min(devicePixelRatio, this.touch ? 1.5 : 1.75);   // phones: sharp enough, far cheaper
+    this.renderer.setPixelRatio(this.pr);
     this.renderer.setSize(innerWidth, innerHeight);
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.scene.background = new THREE.Color('#04050A');
@@ -252,7 +261,7 @@ export class View {
     Object.assign(this.controls, { enableDamping: true, dampingFactor: .08, zoomToCursor: true, maxPolarAngle: 1.42, minDistance: 1.5, maxDistance: 9000, rotateSpeed: .55, zoomSpeed: 1.2 });
     this.controls.addEventListener('start', () => { this.fly = null; this.follow = false; this.drift = null; this.idle = 0; this.onUserMove(); });
 
-    this.composer = new EffectComposer(this.renderer, new THREE.WebGLRenderTarget(innerWidth, innerHeight, { type: THREE.HalfFloatType, samples: 4 }));
+    this.composer = new EffectComposer(this.renderer, new THREE.WebGLRenderTarget(innerWidth, innerHeight, { type: THREE.HalfFloatType, samples: this.touch ? 2 : 4 }));
     this.composer.addPass(new RenderPass(this.scene, this.camera));
     this.composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth / 2, innerHeight / 2), .6, .5, .8));
     this.composer.addPass(new OutputPass());
@@ -451,12 +460,12 @@ export class View {
     return { i: best, d: bd };
   }
   ray = new THREE.Raycaster();
-  pick(nx: number, ny: number) {
+  pick(nx: number, ny: number, touch = false) {
     this.ray.setFromCamera(new THREE.Vector2(nx, ny), this.camera);
     const o = this.ray.ray.origin, d = this.ray.ray.direction;
     if (Math.abs(d.y) < 1e-6) return -1;
     const lim = Math.min(this.chain.n - 1, Math.floor(Math.min(this.mat.uniforms.uCut.value, this.mat.uniforms.uReveal.value)));
-    const tol = this.far > .5 ? 1.6 : .75;
+    const tol = (this.far > .5 ? 1.6 : .75) * (touch ? 1.8 : 1);   // fingers are less precise than a mouse
     for (let k = 0; k <= 24; k++) {
       const y = 1.25 * (1 - k / 24), s = (y - o.y) / d.y;
       if (s < 0) continue;
@@ -514,7 +523,7 @@ export class View {
     this.fly!.snappy = true;
   }
   focusBlock(h: number, dur?: number) {
-    this.follow = false; const { cam, target } = this.blockFrame(h);
+    this.follow = false; const { cam, target } = this.blockFrame(h, innerWidth / innerHeight < 1 ? 12 : 7);   // portrait needs more room around the block
     // long hops arc up over the coil instead of cutting through other blocks
     const hop = this.controls.target.distanceTo(target);
     this.flyTo(cam, target, dur ?? Math.min(3.4, 1.4 + this.far * 1.4 + Math.log10(1 + hop) * .45), Math.min(hop * .35, 260) + (this.far > .5 ? 25 : 0));
@@ -575,12 +584,24 @@ export class View {
   events: CSS2DObject[] = [];
 
   resize() {
-    this.camera.aspect = innerWidth / innerHeight; this.camera.updateProjectionMatrix();
+    this.camera.aspect = innerWidth / innerHeight; this.applyOffset();
+    this.renderer.setPixelRatio(this.pr); this.composer.setPixelRatio(this.pr);
     this.renderer.setSize(innerWidth, innerHeight); this.composer.setSize(innerWidth, innerHeight); this.labels.setSize(innerWidth, innerHeight);
+  }
+  private applyOffset() {
+    if (Math.abs(this.offY) < .5) this.camera.clearViewOffset();
+    else this.camera.setViewOffset(innerWidth, innerHeight, 0, this.offY, innerWidth, innerHeight);
+    this.camera.updateProjectionMatrix();
   }
 
   frame(fixedDt?: number) {
     const real = this.clock.getDelta();
+    // adaptive quality: if frames stay slow, render at a lower resolution (never below 1×)
+    if (fixedDt === undefined && real < .5) {
+      this.frameMs += (real * 1000 - this.frameMs) * .05;
+      this.lastQuality += real;
+      if (this.lastQuality > 2 && this.frameMs > 28 && this.pr > 1) { this.pr = Math.max(1, this.pr - .25); this.resize(); this.lastQuality = 0; }
+    }
     const dt = fixedDt ?? Math.min(real, .05), u = this.mat.uniforms, n = this.chain.n;
     u.uTime.value += dt; this.grain.uniforms.uTime.value = u.uTime.value % 10;
     u.uWaveT.value = Math.min(99, u.uWaveT.value + dt);
@@ -617,7 +638,9 @@ export class View {
     this.far = THREE.MathUtils.smoothstep(dist, 30, 260);
     u.uFar.value = this.far;
     (this.scene.fog as THREE.FogExp2).density = .42 / Math.max(10, dist);
-    this.camera.near = Math.max(.05, dist * .004); this.camera.far = dist * 30 + 300; this.camera.updateProjectionMatrix();
+    this.camera.near = Math.max(.05, dist * .004); this.camera.far = dist * 30 + 300;
+    this.offY += (this.offTarget - this.offY) * (1 - Math.exp(-dt * 6));
+    this.applyOffset();
 
     const focusRaw = this.nearest(this.controls.target.x, this.controls.target.z, n - 1).i;
     const focus = focusRaw < 0 ? n : focusRaw;
