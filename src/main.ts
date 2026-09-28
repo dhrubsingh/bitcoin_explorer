@@ -183,7 +183,7 @@ function tick(dt: number) {
 function renderLive() {
   const tip = chain.n - 1, px = livePrice || chain.usd[tip];
   $('#live').className = 'live ' + (liveState === 'on' ? 'on' : liveState === 'off' ? 'off' : '');
-  $('#live-text').textContent = innerWidth < 600
+  $('#live-text').textContent = innerWidth < 440 ? fmtUsd(px) : innerWidth < 600
     ? `#${fmtInt(tip)} · ${fmtUsd(px)}`
     : `${liveState === 'off' ? 'Offline' : 'Live'} · #${fmtInt(tip)} · ${ago(chain.time[tip])} · ${fmtUsd(px)}`;
 }

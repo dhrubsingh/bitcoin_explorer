@@ -181,5 +181,17 @@ body.history .bar { opacity: 1; transform: none; pointer-events: auto; }
   .cursor span { display: none; }
   .detail { top: auto; bottom: calc(env(safe-area-inset-bottom, 0px) + 84px); left: var(--gut); right: var(--gut); width: auto; }
   .menu { width: min(290px, calc(100vw - 32px)); }
+  /* history view: "Back to live" shares the first row with the colour picker instead of overlapping it */
+  body.history .dock { justify-content: flex-start; left: var(--gut); right: auto; bottom: calc(env(safe-area-inset-bottom, 0px) + 78px); }
+  body.history .dock .pill { height: 42px; }
+}
+@media (max-width: 480px) {
+  .top { gap: 8px; }
+  .top-right { gap: 6px; }
+  .brand h1 { font-size: 17px; }
+  .brand h1 em { font-size: 23px; }
+  .icon, .search { width: 34px; height: 34px; }
+  .search .icon { width: 32px; height: 32px; }
+  .live { height: 34px; padding: 0 11px; gap: 7px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
