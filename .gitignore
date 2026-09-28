@@ -5,3 +5,12 @@ fetch.log
 .DS_Store
 .vercel
 vite.log
+
+# never commit media or local env
+*.mp4
+*.mov
+*.webm
+*.wav
+*.png
+*.jpg
+.env*
