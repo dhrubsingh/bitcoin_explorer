@@ -77,11 +77,6 @@ export class Sound {
       const tg = ctx.createGain(); tg.gain.value = g.gain.value * .5; trem.connect(tg).connect(g.gain); trem.start();
       g.connect(this.padFilter);
     });
-    // a faint air layer
-    const air = ctx.createBufferSource(); air.buffer = this.noise; air.loop = true;
-    const af = ctx.createBiquadFilter(); af.type = 'bandpass'; af.frequency.value = 900; af.Q.value = .4;
-    const ag = ctx.createGain(); ag.gain.value = .012;
-    air.connect(af).connect(ag).connect(this.master); air.start();
   }
 
   private env(g: GainNode, t: number, a: number, peak: number, d: number) {
