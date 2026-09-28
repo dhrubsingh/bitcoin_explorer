@@ -68,4 +68,5 @@ triggers a Vercel redeploy. Between runs the site fills in newer blocks live fro
 ## Demo capture
 
 `/?capture` turns off the real-time loop and exposes `window.__tick(dt)`, so a recorder can step
-the app one video frame at a time. a Playwright script (kept outside this repo) uses this to record demo videos (needs `npm run dev` running and `npm i playwright-core` in `../video`).
+the app one video frame at a time. The demo videos were recorded this way with a Playwright script
+that lives outside this repo.
