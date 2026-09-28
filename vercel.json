@@ -29,7 +29,7 @@
   ],
   "functions": {
     "api/og.ts": {
-      "includeFiles": "api/_fonts/**",
+      "includeFiles": "{api/_fonts/**,node_modules/harfbuzzjs/*.wasm,node_modules/satori/*.wasm}",
       "memory": 1024,
       "maxDuration": 15
     }
